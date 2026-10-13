@@ -6,8 +6,11 @@ and ac_tag_writer.py. Results (lap_results.json, car_classes.csv, grid.csv) are
 saved in that folder. Settings are remembered in ac_bench_gui.json.
 
 Cars tab: "Local cars" shows ratings computed from your own lap_results.json,
-"Server cars" shows the classes downloaded from the AC Bench server
-(car_classes_cloud.csv, written by the Server tab's "Download and match classes").
+"Server cars" shows the classes downloaded from the AC Bench server.
+
+Server ratings are kept private to the app: "Download and apply tags" downloads them, writes the class tags
+into the cars, and then deletes the downloaded files (they are only held in memory for the Server cars list
+until you close the app).
 
 Run: python ac_bench_gui.py   (tkinter ships with the python.org installer)
 """
@@ -27,6 +30,8 @@ RESULTS = HERE / "lap_results.json"
 CLASSES = HERE / "car_classes.csv"
 CLOUD_CLASSES = HERE / "car_classes_cloud.csv"
 CLOUD_MISSING = HERE / "cloud_missing.txt"
+# Server table cached by ac_cloud.py sync. CHECK this name against what ac_cloud.py leaves in this folder.
+CLOUD_TABLE = HERE / "cloud_classes.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 ESTIMATE = HERE / "car_classes_estimate.csv"
 GRID = HERE / "grid.csv"
@@ -40,7 +45,7 @@ DEFAULTS = {
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
     "auto_drive": False, "click_delay": 25, "press_key": "",
     "reference": str(HERE / "track_reference.json"), "ignore_ui": False, "skip_vanilla": False,
-    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_prov": False, "cloud_attest": True, "class_source": "local",
+    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_prov": False, "cloud_attest": True,
     "class_gap": 2.0, "allow_partial": False, "min_class_size": 3, "fixed_classes": 0,
     "tie_zone": 0.10, "bop_sens": "",
     "grid_size": 20, "grid_gap": 2.5, "grid_class": "", "grid_around": "",
@@ -89,8 +94,9 @@ def bench_cmd(c, extra=()):
 
 
 def classes_path(c):
-    """Class CSV the grid builder and tag writer read: your own results or the cloud classes."""
-    return CLOUD_CLASSES if c.get("class_source") == "cloud" else CLASSES
+    """Class CSV the grid builder and tag writer read: always your own results. Server ratings are never
+    left on disk (see purge_downloaded), they are only applied through 'Download and apply tags'."""
+    return CLASSES
 
 
 def cloud_cmd(c, action):
@@ -161,11 +167,11 @@ def grid_cmd(c, list_only=False):
     return cmd
 
 
-def tag_cmd(c, mode):
-    """mode: dry | apply | untag | restore"""
+def tag_cmd(c, mode, classes=None):
+    """mode: dry | apply | untag | restore. classes: CSV to read (default: your own car_classes.csv)."""
     if mode == "restore":
         return ["ac_tag_writer.py", cars_dir(c), "--restore"]
-    cmd = ["ac_tag_writer.py", cars_dir(c), str(classes_path(c)), "--prefix", c["tag_prefix"]]
+    cmd = ["ac_tag_writer.py", cars_dir(c), str(classes or classes_path(c)), "--prefix", c["tag_prefix"]]
     if c["tag_exclude"]:
         cmd += ["--exclude", c["tag_exclude"]]
     if mode in ("apply", "untag"):
@@ -233,10 +239,8 @@ def _num(v):
         return None
 
 
-def load_cloud_rows(cars, csv_path, tracks):
-    """Rows for the SERVER car list, from car_classes_cloud.csv (written by 'Download and match classes').
-    Every car in the library gets a row; cars the server has no usable class for are 'no server class'."""
-    tracks = [t.strip() for t in tracks if t and t.strip()]
+def read_cloud_csv(csv_path):
+    """{car id: csv row} from the downloaded server classes (empty if the file is not there)."""
     by_id = {}
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:
@@ -244,6 +248,33 @@ def load_cloud_rows(cars, csv_path, tracks):
                 by_id[r.get("id", "")] = r
     except OSError:
         pass
+    return by_id
+
+
+def purge_downloaded():
+    """Delete the downloaded server ratings from disk and forget the download marker, so the next sync fetches
+    the table fresh (otherwise the server answers 'not modified' and there is nothing left to read)."""
+    for p in (CLOUD_CLASSES, CLOUD_TABLE):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    try:
+        j = json.loads(CLOUD_CFG.read_text(encoding="utf-8"))
+        gone = [k for k in j if "etag" in k.lower()]
+        for k in gone:
+            j.pop(k)
+        if gone:
+            CLOUD_CFG.write_text(json.dumps(j, indent=1), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
+def load_cloud_rows(cars, source, tracks):
+    """Rows for the SERVER car list. source: {car id: csv row} (or a CSV path). Every car in the library gets
+    a row; cars the server has no usable class for are 'no server class'."""
+    tracks = [t.strip() for t in tracks if t and t.strip()]
+    by_id = source if isinstance(source, dict) else read_cloud_csv(source)
     rows = []
     for cid, name in cars:
         r = by_id.get(cid)
@@ -374,7 +405,7 @@ def main():
     last_line = tk.StringVar(value="")
     q = queue.Queue()
     state = {"proc": None, "graceful": False, "on_done": None, "stopping": False,
-             "cars": [], "cars_dir": None}
+             "cars": [], "cars_dir": None, "server_by_id": {}, "server_stamp": "", "purge_pending": False}
     hooks = []  # called after every finished job (e.g. refresh the car lists)
     run_buttons = []
 
@@ -732,7 +763,7 @@ def main():
         bar_.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         pbtn(bar_, "Benchmark selected cars", lambda: do_bench_selected(s), accent=True)
         if not local:
-            pbtn(bar_, "Download server classes", lambda: do_cloud("sync"))
+            pbtn(bar_, "Download and apply tags", lambda: do_download_and_tag())
             pbtn(bar_, "Benchmark cars missing from server", lambda: do_missing())
         ttk.Button(bar_, text="Refresh", command=lambda: cars_refresh(rescan=True)).pack(side="right")
         ttk.Button(bar_, text="Clear selection",
@@ -762,15 +793,17 @@ def main():
         tracks = [c["track1"], c["track2"]]
         local_sec["rows"] = build_rows(state["cars"], results, tracks, c["class_gap"],
                                        int(c["min_class_size"]), int(c["fixed_classes"]))
-        server_sec["rows"] = load_cloud_rows(state["cars"], CLOUD_CLASSES, tracks)
+        if CLOUD_CLASSES.exists():  # keep a copy in memory only; the file itself is deleted after tagging
+            state["server_by_id"] = read_cloud_csv(CLOUD_CLASSES)
+            state["server_stamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        server_sec["rows"] = load_cloud_rows(state["cars"], state["server_by_id"], tracks)
         local_sec["info"].set("Ratings from your own benchmark results (lap_results.json). "
                               "Selected cars run on every track, even if already rated.")
-        if CLOUD_CLASSES.exists():
-            stamp = datetime.fromtimestamp(CLOUD_CLASSES.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            server_sec["info"].set(f"Classes downloaded from the server on {stamp} "
-                                   "(verified only unless the Server tab says otherwise).")
+        if state["server_by_id"]:
+            server_sec["info"].set(f"Server classes downloaded {state['server_stamp']}. Held in memory only: "
+                                   "the downloaded file is deleted once the tags are written.")
         else:
-            server_sec["info"].set("No server classes downloaded yet. Press 'Download server classes'.")
+            server_sec["info"].set("No server classes loaded. Press 'Download and apply tags'.")
         local_sec["render"]()
         server_sec["render"]()
 
@@ -857,6 +890,7 @@ def main():
     entry_row(tg, 1, "Skip car ids matching (regex)", "tag_exclude")
     ttk.Label(t4, style="Muted.TLabel", justify="left",
               text="Writes class tags into each car's ui_car.json (backups kept as .gridbak).\n"
+                   "Each car gets exactly one class tag: re-applying replaces the old one and never adds a duplicate.\n"
                    "Skip cars you also race online.").pack(anchor="w", pady=(0, 10))
 
     def do_tags(mode):
@@ -975,13 +1009,49 @@ def main():
             return
         run(cloud_cmd(c, action))
 
+    def do_download_and_tag():
+        c = cfg()
+        if not c["cloud_url"].strip():
+            messagebox.showwarning("Server", "Fill in the server address first (Server tab).")
+            return
+        if not need("ac_dir", "tag_prefix"):
+            return
+        if not messagebox.askyesno(
+                "Download and apply tags",
+                "This downloads the server classes, writes one class tag into each matched car "
+                "(backups are made first), then deletes the downloaded ratings.\n\nContinue?"):
+            return
+
+        def tag_step():
+            if not CLOUD_CLASSES.exists():
+                write("No server classes were downloaded, nothing to tag.\n")
+                state["purge_pending"] = False
+                purge_downloaded()
+                return
+            run(tag_cmd(c, "apply", CLOUD_CLASSES))
+
+        state["purge_pending"] = True
+        run(cloud_cmd(c, "sync"), on_done=tag_step)
+
+    def purge_hook():
+        """After the tag step (or a failed download) remove the downloaded ratings from disk."""
+        if not state["purge_pending"]:
+            return
+        cmd = state.get("last_cmd") or []
+        name = cmd[0] if cmd else ""
+        if name == "ac_tag_writer.py" or (name == "ac_cloud.py" and state.get("last_rc") != 0):
+            state["purge_pending"] = False
+            purge_downloaded()
+            write("Downloaded ratings removed from disk (kept in memory for the Server cars list).\n")
+            cars_refresh()
+
     def do_missing():
         c = need_bench()
         if not c:
             return
         ids = CLOUD_MISSING.read_text(encoding="utf-8").split() if CLOUD_MISSING.exists() else []
         if not ids:
-            messagebox.showinfo("Server", "Nothing to benchmark. Press 'Download and match classes' first; "
+            messagebox.showinfo("Server", "Nothing to benchmark. Press 'Download and apply tags' first; "
                                           "it lists the cars the server has no class for.")
             return
         if len(ids) > 20 and not messagebox.askyesno("Server", f"{len(ids)} cars have no server class yet. Benchmark them all?"):
@@ -993,27 +1063,25 @@ def main():
     pbtn(cf2, "Test connection", lambda: do_cloud("ping"))
     pbtn(cf2, "Register", lambda: do_cloud("register"))
     pbtn(cf2, "Upload my results", lambda: do_cloud("upload"), accent=True)
-    pbtn(cf2, "Download and match classes", lambda: do_cloud("sync"), accent=True)
+    pbtn(cf2, "Download and apply tags", lambda: do_download_and_tag(), accent=True)
     cf3 = ttk.Frame(tcl)
     cf3.pack(fill="x", pady=(8, 10))
     pbtn(cf3, "Benchmark cars missing from the server", do_missing)
-
-    src = ttk.LabelFrame(tcl, text="Which classes should the Grid and CM tags tabs use?", padding=10)
-    src.pack(fill="x", pady=(0, 10))
-    ttk.Radiobutton(src, text="My own results (car_classes.csv)", variable=vars_["class_source"], value="local").grid(row=0, column=0, sticky="w")
-    ttk.Radiobutton(src, text="Server classes (car_classes_cloud.csv)", variable=vars_["class_source"], value="cloud").grid(row=0, column=1, sticky="w", padx=14)
 
     ttk.Label(tcl, justify="left", style="Muted.TLabel", text=(
         "Upload sends only results driven on the verified vanilla setup (Vanilla check tab) under the current baseline.\n"
         "The server recomputes every score and rejects what does not validate; reasons appear in the log.\n"
         "Download matches your cars to the server by the hash of their physics files (not the folder name), so a\n"
-        "modified or updated car is not given another car's class. Cars without a class are listed for benchmarking.")
+        "modified or updated car is not given another car's class. It then writes the class tags into your cars and\n"
+        "deletes the downloaded ratings: they stay private to this app and are only kept in memory for the Server\n"
+        "cars list. Cars without a class are listed for benchmarking.")
               ).pack(anchor="w")
 
     def cloud_hook():
         refresh_cloud_status()
 
     hooks.append(cloud_hook)
+    hooks.append(purge_hook)
     refresh_cloud_status()
     nb.add(tcl, text="Server")
 
@@ -1038,10 +1106,12 @@ def main():
             return
         if state["proc"]:
             stop()
+        purge_downloaded()
         save_cfg()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+    purge_downloaded()  # never leave downloaded server ratings lying around between sessions
     write("Ready.\n")
     poll()
     root.mainloop()
