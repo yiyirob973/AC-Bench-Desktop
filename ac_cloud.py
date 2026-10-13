@@ -1,3 +1,343 @@
 #!/usr/bin/env python3
-"""Cloud submission helper."""
-print("Cloud upload helper loaded")
+"""
+Client for the AC Bench cloud server.
+
+  python ac_cloud.py ping     --server https://example.org
+  python ac_cloud.py register --server https://example.org --invite CODE --name MyName
+  python ac_cloud.py upload   --cars-dir "<AC>/content/cars" [--attest-legacy]
+  python ac_cloud.py sync     --cars-dir "<AC>/content/cars"           (add --include-provisional)
+
+upload : sends every benchmark result that was driven on the verified vanilla environment under
+         the current baseline (lap_results.json + track_check_log.json). Results are matched to
+         cars by the hash of the car's physics files, never by folder name. The server recomputes
+         the scores and may reject entries; the reasons are printed.
+sync   : downloads the classes and matches every car in your library by that hash. Writes
+         car_classes_cloud.csv (same columns as car_classes.csv, so the grid builder and the CM tag
+         writer can use it) and cloud_missing.txt (cars the cloud has no usable class for yet:
+         benchmark those and upload).
+The server address and your API key are kept in cloud_config.json next to this file.
+"""
+import argparse, csv, json, sys, urllib.error, urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from ac_car_classifier import read_ui, num, class_sort_key   # noqa: E402
+import ac_baseline as bl      # noqa: E402
+import ac_carid               # noqa: E402
+import ac_rating              # noqa: E402
+
+CFG_FILE = HERE / "cloud_config.json"
+UPLOADED = HERE / "cloud_uploaded.json"
+CLOUD_JSON = HERE / "cloud_classes.json"
+CLOUD_CSV = HERE / "car_classes_cloud.csv"
+MISSING = HERE / "cloud_missing.txt"
+CHUNK = 400
+
+
+def load_json(path, default):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path, data):
+    Path(path).write_text(json.dumps(data, indent=1), encoding="utf-8")
+
+
+def settings(args):
+    cfg = load_json(CFG_FILE, {})
+    if getattr(args, "server", None):
+        cfg["server"] = args.server.rstrip("/")
+    if not cfg.get("server"):
+        raise SystemExit("No server set. Pass --server URL (or fill it in on the GUI's Cloud tab).")
+    u = urlparse(cfg["server"])
+    if u.scheme not in ("http", "https") or not u.netloc:
+        raise SystemExit("The server address must start with https:// (or http:// for local tests).")
+    if u.scheme == "http" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
+        print("WARNING: plain http sends your API key unencrypted. Use https.")
+    return cfg
+
+
+def call(cfg, method, path, body=None, auth=False, etag=None):
+    """-> (status, parsed json or None, headers)."""
+    headers = {"Accept": "application/json", "User-Agent": "ac_bench-cloud/1"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if auth:
+        if not cfg.get("api_key"):
+            raise SystemExit("Not registered yet. Run: ac_cloud.py register --invite CODE --name NAME")
+        headers["Authorization"] = "Bearer " + cfg["api_key"]
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(cfg["server"] + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else None), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw), dict(e.headers)
+        except Exception:
+            return e.code, {"error": raw[:200].decode("utf-8", "replace")}, dict(e.headers)
+    except urllib.error.URLError as e:
+        raise SystemExit("Could not reach the server: %s" % e.reason)
+
+
+# ------------------------------------------------------------------ commands
+def cmd_ping(args):
+    cfg = settings(args)
+    code, h, _ = call(cfg, "GET", "/v1/health")
+    if code != 200:
+        raise SystemExit("Server answered %s" % code)
+    code, c, _ = call(cfg, "GET", "/v1/config")
+    print("Server OK. Accepts baseline %s, tracks %s, batch <= %s, class table v%s." %
+          (c["profile"], ", ".join(c["tracks"]), c["max_batch"], c["class_table_version"]))
+    problems = []
+    if c["profile"] != bl.PROFILE_ID:
+        problems.append("your app uses baseline %s, the server wants %s: update the app" % (bl.PROFILE_ID, c["profile"]))
+    if c["tracks"] != bl.TRACKS:
+        problems.append("track list differs from your app's fixed tracks")
+    if not c.get("env"):
+        problems.append("the server has no canonical environment yet (the operator must run set-env)")
+    for p in problems:
+        print("PROBLEM:", p)
+    print("Registered: %s" % ("yes" if cfg.get("api_key") else "no"))
+    save_json(CFG_FILE, cfg)
+
+
+def cmd_register(args):
+    cfg = settings(args)
+    code, r, _ = call(cfg, "POST", "/v1/register", {"invite": args.invite, "name": args.name})
+    if code != 201:
+        raise SystemExit("Registration failed: %s" % (r or {}).get("error", code))
+    cfg["api_key"], cfg["name"] = r["api_key"], r["name"]
+    save_json(CFG_FILE, cfg)
+    print("Registered as %s (role %s). The key is saved in %s: keep that file private." % (r["name"], r["role"], CFG_FILE.name))
+
+
+def latest_env(env_log):
+    """(id, env) of the newest passing vanilla check that recorded an environment."""
+    for entry in reversed(env_log):
+        if entry.get("status") == "ok" and entry.get("env_id") and entry.get("env"):
+            return entry["env_id"], entry["env"]
+    return None, None
+
+
+def old_check_digests(env_log):
+    """Per track id: the digests seen in passing checks from before environments were recorded."""
+    seen = {}
+    for entry in env_log:
+        if entry.get("status") == "ok" and not entry.get("ignore_ui") and not entry.get("env_id"):
+            for t, v in (entry.get("tracks") or {}).items():
+                if isinstance(v, dict) and v.get("digest"):
+                    seen.setdefault(t, set()).add(v["digest"])
+    return seen
+
+
+def build_entries(results, env_log, cars_dir, server_cfg, attest_legacy=False):
+    """Upload-eligible entries, the environments they use, and a count of why others were skipped.
+
+    Results benchmarked before environments were stamped have no env id. With attest_legacy they are
+    stamped with the CURRENT verified environment, but only when every older passing vanilla check on
+    record for that track had exactly the same track digest (so the track has not changed since), and
+    a current verified environment exists. acs.exe cannot be proven for old runs: you attest it."""
+    envs = {}
+    for entry in env_log:
+        if entry.get("status") == "ok" and entry.get("env_id") and entry.get("env"):
+            envs[entry["env_id"]] = entry["env"]
+    cur_id, cur_env = latest_env(env_log)
+    history = old_check_digests(env_log)
+    skipped, entries, used_envs = {}, [], {}
+
+    def skip(why):
+        skipped[why] = skipped.get(why, 0) + 1
+
+    hash_cache = {}
+    for car, per in results.items():
+        for track, e in per.items():
+            if e.get("status") != "ok":
+                continue
+            tid = track.partition("/")[0]
+            env_ref = e.get("env")
+            if track not in server_cfg["tracks"]:
+                skip("track not part of the server baseline")
+                continue
+            if e.get("profile") != server_cfg["profile"]:
+                skip("made under another baseline profile (benchmark again with the current app)")
+                continue
+            if (e.get("batch") or 1) > server_cfg["max_batch"]:
+                skip("cars shared the track (batch above the server limit)")
+                continue
+            if env_ref and env_ref not in envs:
+                skip("its environment id is not in track_check_log.json")
+                continue
+            if not env_ref:                       # benchmarked before environments were stamped
+                if not attest_legacy:
+                    skip("benchmarked before the cloud update, no environment stamp "
+                         "(use 'include older results' / --attest-legacy)")
+                    continue
+                if not cur_env or tid not in (cur_env.get("tracks") or {}):
+                    skip("no current vanilla check on record for this track (press Verify tracks now first)")
+                    continue
+                if not history.get(tid):
+                    skip("no earlier passing vanilla check on record for this track")
+                    continue
+                if history[tid] != {cur_env["tracks"][tid]}:
+                    skip("the track was different at benchmark time (older vanilla checks do not match the current one)")
+                    continue
+                env_ref = cur_id
+                envs[cur_id] = cur_env
+            if len(e.get("laps_ms") or []) < server_cfg["laps"]:
+                skip("too few laps recorded")
+                continue
+            h = e.get("car_hash")
+            if not h and cars_dir:
+                if car not in hash_cache:
+                    hash_cache[car] = ac_carid.car_hash(Path(cars_dir) / car)
+                h = hash_cache[car]
+            if not h:
+                skip("car files not found, cannot identify the car")
+                continue
+            name = read_ui(Path(cars_dir) / car).get("name", car) if cars_dir else car
+            entries.append({"car_id": car, "car_hash": h, "name": name, "track": track,
+                            "laps_ms": e["laps_ms"][:server_cfg["laps"]], "batch": e.get("batch") or 1, "env": env_ref})
+            used_envs[env_ref] = envs[env_ref]
+    return entries, used_envs, skipped
+
+
+def cmd_upload(args):
+    cfg = settings(args)
+    code, sc, _ = call(cfg, "GET", "/v1/config")
+    if code != 200:
+        raise SystemExit("Could not read the server configuration")
+    if sc["profile"] != bl.PROFILE_ID:
+        raise SystemExit("Your app's baseline (%s) is not the one the server accepts (%s)." % (bl.PROFILE_ID, sc["profile"]))
+    results = load_json(args.results, {})
+    env_log = load_json(args.log, [])
+    entries, envs, skipped = build_entries(results, env_log, args.cars_dir, sc, getattr(args, "attest_legacy", False))
+    done = load_json(UPLOADED, {})
+    if not args.all:
+        before = len(entries)
+        entries = [e for e in entries if done.get(e["car_hash"] + "|" + e["track"]) != round(ac_rating.lap_score({"laps_ms": e["laps_ms"]})[0])]
+        if before - len(entries):
+            print("%d result(s) already uploaded unchanged (use --all to resend)" % (before - len(entries)))
+    for why, n in sorted(skipped.items(), key=lambda kv: -kv[1]):
+        print("skipped %4d: %s" % (n, why))
+    if not entries:
+        print("Nothing new to upload.")
+        return
+    accepted, reasons, status = 0, {}, {}
+    for i in range(0, len(entries), CHUNK):
+        chunk = entries[i:i + CHUNK]
+        body = {"client": {"app": "ac_bench", "version": 1}, "profile": bl.PROFILE_ID,
+                "environments": {k: envs[k] for k in {e["env"] for e in chunk}}, "results": chunk}
+        code, r, _ = call(cfg, "POST", "/v1/submit", body, auth=True)
+        if code != 200:
+            raise SystemExit("Upload failed: %s (%s)" % ((r or {}).get("error", "error"), code))
+        bad = {x["index"] for x in r["rejected"]}
+        for x in r["rejected"]:
+            reasons[x["reason"]] = reasons.get(x["reason"], 0) + 1
+        for j, e in enumerate(chunk):
+            if j not in bad and r["rejected_total"] == len(r["rejected"]):
+                done[e["car_hash"] + "|" + e["track"]] = round(ac_rating.lap_score({"laps_ms": e["laps_ms"]})[0])
+        accepted += r["accepted"]
+        for k, v in r["merged_status"].items():
+            status[k] = status.get(k, 0) + v
+    save_json(UPLOADED, done)
+    print("accepted %d of %d results. Merged state: %s" % (accepted, len(entries), json.dumps(status)))
+    for why, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        print("rejected %4d: %s" % (n, why))
+
+
+def cmd_sync(args):
+    cfg = settings(args)
+    code, data, headers = call(cfg, "GET", "/v1/classes", etag=cfg.get("classes_etag"))
+    if code == 304 and CLOUD_JSON.exists():
+        data = load_json(CLOUD_JSON, None)
+        print("Class data unchanged since the last download.")
+    elif code != 200:
+        raise SystemExit("Download failed: %s" % ((data or {}).get("error", code)))
+    else:
+        save_json(CLOUD_JSON, data)
+        cfg["classes_etag"] = headers.get("ETag")
+        save_json(CFG_FILE, cfg)
+    table = data.get("table")
+    if not table:
+        print("The server has no class table yet: the operator has to publish one. Nothing to match.")
+    wanted = ("verified", "provisional") if args.include_provisional else ("verified",)
+    by_hash = {c["car_hash"]: c for c in data["cars"]}
+    cars_dir = Path(args.cars_dir)
+    tracks = data["tracks"]
+    fields = (["class", "id", "name", "hp", "mass_kg", "gap_pct", "score_pct"]
+              + ["time_" + t.replace("/", "_") for t in tracks] + ["delta_" + t.replace("/", "_") for t in tracks]
+              + ["variance_pct", "timed_laps", "flags", "bop", "notes", "cloud_status"])
+    rows, missing, counts = [], [], {}
+    local = sorted(d for d in cars_dir.iterdir() if d.is_dir()) if cars_dir.is_dir() else []
+    for n, d in enumerate(local, 1):
+        if n % 250 == 0:
+            print("  hashed %d / %d cars ..." % (n, len(local)), flush=True)
+        h = ac_carid.car_hash(d)
+        rec = by_hash.get(h) if h else None
+        if not rec or not table or rec.get("class") is None or rec["status"] not in wanted:
+            missing.append(d.name)
+            continue
+        ui = read_ui(d)
+        specs = ui.get("specs") or {}
+        hp, mass = num(specs.get("bhp", "")), num(specs.get("weight", ""))
+        row = {"class": rec["class"], "id": d.name, "name": ui.get("name", d.name),
+               "hp": str(round(hp)) if hp else "", "mass_kg": str(round(mass)) if mass else "",
+               "gap_pct": round(rec["gap_pct"], 3), "score_pct": round(rec["score_pct"], 3),
+               "variance_pct": round(rec["variance_pct"], 3), "timed_laps": "", "flags": "; ".join(rec["flags"]),
+               "bop": rec["bop"], "cloud_status": rec["status"],
+               "notes": "cloud class table v%s, %s" % (table["version"], rec["status"])}
+        for t in tracks:
+            key = t.replace("/", "_")
+            row["time_" + key] = round(rec["times_ms"][t] / 1000, 3)
+            row["delta_" + key] = round(rec["deltas"][t], 3)
+        rows.append(row)
+        counts[rec["class"]] = counts.get(rec["class"], 0) + 1
+    rows.sort(key=lambda r: (r["score_pct"], r["id"]))
+    with open(CLOUD_CSV, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    MISSING.write_text("\n".join(missing) + ("\n" if missing else ""), encoding="utf-8")
+    print("%d of %d cars in your library have a cloud class (%s) -> %s" %
+          (len(rows), len(local), "verified + provisional" if args.include_provisional else "verified only", CLOUD_CSV.name))
+    if counts:
+        print("Classes: " + ", ".join("%s=%d" % (k, counts[k]) for k in sorted(counts, key=class_sort_key)))
+    print("%d cars have no usable cloud class yet -> %s (benchmark them, then upload)" % (len(missing), MISSING.name))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="AC Bench cloud client")
+    ap.add_argument("--server", help="server address, e.g. https://acbench.example.org")
+    sub = ap.add_subparsers(dest="command", required=True)
+    sub.add_parser("ping")
+    s = sub.add_parser("register")
+    s.add_argument("--invite", required=True)
+    s.add_argument("--name", required=True)
+    s = sub.add_parser("upload")
+    s.add_argument("--results", default=str(HERE / "lap_results.json"))
+    s.add_argument("--log", default=str(HERE / "track_check_log.json"))
+    s.add_argument("--cars-dir", help="content/cars (used to identify cars and read names)")
+    s.add_argument("--all", action="store_true", help="resend results that were already uploaded")
+    s.add_argument("--attest-legacy", action="store_true",
+                   help="also upload results benchmarked before environments were stamped, if the track digests of all "
+                        "older vanilla checks equal the current verified environment (run Verify tracks now first)")
+    s = sub.add_parser("sync")
+    s.add_argument("--cars-dir", required=True)
+    s.add_argument("--include-provisional", action="store_true",
+                   help="also use classes backed by a single submission (less reliable)")
+    args = ap.parse_args()
+    {"ping": cmd_ping, "register": cmd_register, "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
+
+
+if __name__ == "__main__":
+    main()
