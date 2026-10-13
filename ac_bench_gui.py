@@ -5,16 +5,22 @@ ac_lap_bench.py, ac_classify_laps.py, ac_car_classifier.py, ac_grid_builder.py
 and ac_tag_writer.py. Results (lap_results.json, car_classes.csv, grid.csv) are
 saved in that folder. Settings are remembered in ac_bench_gui.json.
 
-Run:  python ac_bench_gui.py        (tkinter ships with the python.org installer)
+Cars tab: "Local cars" shows ratings computed from your own lap_results.json,
+"Server cars" shows the classes downloaded from the AC Bench server
+(car_classes_cloud.csv, written by the Server tab's "Download and match classes").
+
+Run: python ac_bench_gui.py   (tkinter ships with the python.org installer)
 """
-import json, os, queue, subprocess, sys, threading
+import csv, json, os, queue, subprocess, sys, threading
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from ac_car_classifier import class_label, class_sort_key   # noqa: E402
-from ac_baseline import TRACKS as BL_TRACKS, PROFILE_ID, describe as bl_describe   # noqa: E402
-import ac_rating as rating   # noqa: E402
+from ac_car_classifier import class_label, class_sort_key  # noqa: E402
+from ac_baseline import TRACKS as BL_TRACKS, PROFILE_ID, describe as bl_describe  # noqa: E402
+import ac_rating as rating  # noqa: E402
+
 CFG_FILE = HERE / "ac_bench_gui.json"
 STOP_FILE = HERE / "STOP"
 RESULTS = HERE / "lap_results.json"
@@ -29,7 +35,7 @@ DEFAULTS = {
     "ac_dir": r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa",
     "docs_dir": str(Path.home() / "Documents" / "Assetto Corsa"),
     "template": "", "group_by": "",
-    "track1": BL_TRACKS[0], "track2": BL_TRACKS[1],      # hard-coded baseline tracks (not editable)
+    "track1": BL_TRACKS[0], "track2": BL_TRACKS[1],  # hard-coded baseline tracks (not editable)
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
     "auto_drive": False, "click_delay": 25, "press_key": "",
@@ -42,8 +48,12 @@ DEFAULTS = {
     "tag_prefix": "#grid-class-", "tag_exclude": "",
 }
 
+LOCAL_FILTERS = ["All", "Rated", "Not rated", "Partial", "Failed", "Old settings", "Flagged"]
+SERVER_FILTERS = ["All", "Verified", "Provisional", "No server class", "Flagged"]
+
 
 # ---------- command builders (pure functions, no GUI) ----------
+
 def cars_dir(c):
     return str(Path(c["ac_dir"]) / "content" / "cars")
 
@@ -165,8 +175,8 @@ def tag_cmd(c, mode):
     return cmd
 
 
-
 # ---------- car list data (pure functions, no GUI) ----------
+
 def load_car_names(ac_dir):
     """[(folder id, display name)] for every car in content/cars."""
     base = Path(ac_dir) / "content" / "cars"
@@ -186,7 +196,7 @@ def load_car_names(ac_dir):
 
 
 def build_rows(cars, results, tracks, class_gap, min_size=3, fixed_k=0):
-    """Rows for the car list. 'rated' = a valid time on every track. Classes, gaps and flags come from
+    """Rows for the LOCAL car list. 'rated' = a valid time on every track. Classes, gaps and flags come from
     ac_rating.rate: median lap score, mean % delta over the tracks, natural class borders."""
     tracks = [t.strip() for t in tracks if t and t.strip()]
     info, _ = rating.rate(results, tracks, class_gap=class_gap, min_size=min_size, fixed_k=fixed_k)
@@ -207,7 +217,8 @@ def build_rows(cars, results, tracks, class_gap, min_size=3, fixed_k=0):
             status = f"partial {nok}/{len(tracks)}"
         else:
             status = "failed" if failed else "not run"
-        row = {"id": cid, "name": name, "status": status, "times": times, "gap": None, "cls": None, "flags": ""}
+        row = {"id": cid, "name": name, "status": status, "times": times, "gap": None, "cls": None,
+               "flags": "", "bop": "", "variance": None}
         c = info.get(cid)
         if c and status.startswith("rated"):
             row.update(gap=c["gap"], cls=c["cls"], flags=c["flags_text"])
@@ -215,14 +226,107 @@ def build_rows(cars, results, tracks, class_gap, min_size=3, fixed_k=0):
     return rows
 
 
+def _num(v):
+    try:
+        return float(v) if v not in ("", None) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def load_cloud_rows(cars, csv_path, tracks):
+    """Rows for the SERVER car list, from car_classes_cloud.csv (written by 'Download and match classes').
+    Every car in the library gets a row; cars the server has no usable class for are 'no server class'."""
+    tracks = [t.strip() for t in tracks if t and t.strip()]
+    by_id = {}
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                by_id[r.get("id", "")] = r
+    except OSError:
+        pass
+    rows = []
+    for cid, name in cars:
+        r = by_id.get(cid)
+        if not r:
+            rows.append({"id": cid, "name": name, "status": "no server class", "times": [None] * len(tracks),
+                         "gap": None, "cls": None, "flags": "", "bop": "", "variance": None})
+            continue
+        rows.append({
+            "id": cid, "name": name,
+            "status": (r.get("cloud_status") or "verified").strip().lower(),
+            "times": [_num(r.get("time_" + t.replace("/", "_"))) for t in tracks],
+            "gap": _num(r.get("gap_pct")), "cls": (r.get("class") or "").strip() or None,
+            "flags": r.get("flags", "") or "", "bop": r.get("bop", "") or "",
+            "variance": _num(r.get("variance_pct"))})
+    return rows
+
+
+def status_tag(status):
+    """Colour group for a row status."""
+    s = status.lower()
+    if s.startswith("failed"):
+        return "bad"
+    if "old settings" in s or s.startswith("partial") or s == "provisional":
+        return "warn"
+    if s.startswith("rated") or s == "verified":
+        return "ok"
+    return "dim"
+
+
+def row_matches(kind, r, text, sf):
+    """Filter box + status dropdown for a row of either list."""
+    if text and text not in r["id"].lower() and text not in r["name"].lower():
+        return False
+    s = r["status"]
+    if sf == "All":
+        return True
+    if sf == "Flagged":
+        return bool(r["flags"])
+    if kind == "local":
+        return ((sf == "Rated" and s.startswith("rated")) or (sf == "Not rated" and not s.startswith("rated"))
+                or (sf == "Partial" and s.startswith("partial")) or (sf == "Failed" and s == "failed")
+                or (sf == "Old settings" and "old settings" in s))
+    return ((sf == "Verified" and s == "verified") or (sf == "Provisional" and s == "provisional")
+            or (sf == "No server class" and s == "no server class"))
+
+
 # ---------- GUI ----------
+
 def main():
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import ttk, filedialog, messagebox, scrolledtext
 
     root = tk.Tk()
-    root.title("AC Car Benchmark")
-    root.geometry("920x840")
+    root.title("AC Bench")
+    root.geometry("1060x720")
+    root.minsize(900, 560)
+
+    # ---- look and feel ----
+    style = ttk.Style(root)
+    try:
+        style.theme_use("vista" if os.name == "nt" else "clam")
+    except tk.TclError:
+        pass
+    for fname in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
+        try:
+            tkfont.nametofont(fname).configure(size=10)
+        except tk.TclError:
+            pass
+    bold = tkfont.nametofont("TkDefaultFont").copy()
+    bold.configure(weight="bold")
+    style.configure("Treeview", rowheight=24)
+    style.configure("Treeview.Heading", font=bold, padding=(6, 4))
+    style.configure("TButton", padding=(8, 4))
+    style.configure("Accent.TButton", font=bold, padding=(12, 5))
+    style.configure("TNotebook.Tab", padding=(14, 6))
+    style.configure("Muted.TLabel", foreground="#6e7781")
+    style.configure("Bold.TLabel", font=bold)
+    style.configure("TLabelframe.Label", font=bold)
+
+    def fixed_map(option):  # workaround: Tk 8.6.9 ignores Treeview row tag colours without this
+        return [e for e in style.map("Treeview", query_opt=option) if e[:2] != ("!disabled", "!selected")]
+    style.map("Treeview", foreground=fixed_map("foreground"), background=fixed_map("background"))
 
     saved = {}
     if CFG_FILE.exists():
@@ -248,21 +352,42 @@ def main():
             try:
                 out[k] = v.get()
             except tk.TclError:
-                out[k] = DEFAULTS[k]       # blank/invalid number field
-        out["track1"], out["track2"] = BL_TRACKS[0], BL_TRACKS[1]     # baseline tracks are fixed
+                out[k] = DEFAULTS[k]  # blank/invalid number field
+        out["track1"], out["track2"] = BL_TRACKS[0], BL_TRACKS[1]  # baseline tracks are fixed
         return out
 
     def save_cfg():
         CFG_FILE.write_text(json.dumps(cfg(), indent=1), encoding="utf-8")
 
-    # --- log + process runner ---
-    log = scrolledtext.ScrolledText(root, height=14, state="disabled", font=("Consolas", 9))
+    # --- log (hidden by default) + process runner ---
+    log_frame = ttk.Frame(root)
+    log_head = ttk.Frame(log_frame)
+    log_head.pack(fill="x")
+    ttk.Label(log_head, text="Log", style="Bold.TLabel").pack(side="left")
+    log = scrolledtext.ScrolledText(log_frame, height=12, state="disabled", font=("Consolas", 9))
+    ttk.Button(log_head, text="Clear",
+               command=lambda: (log.configure(state="normal"), log.delete("1.0", "end"),
+                                log.configure(state="disabled"))).pack(side="right")
+    log.pack(fill="both", expand=True, pady=(4, 0))
+
     status = tk.StringVar(value="Idle")
+    last_line = tk.StringVar(value="")
     q = queue.Queue()
-    state = {"proc": None, "graceful": False, "on_done": None,
-             "cars": [], "cars_dir": None, "rows": [], "sort": ("gap", False)}
-    hooks = []      # called after every finished job (e.g. refresh the car list)
+    state = {"proc": None, "graceful": False, "on_done": None, "stopping": False,
+             "cars": [], "cars_dir": None}
+    hooks = []  # called after every finished job (e.g. refresh the car lists)
     run_buttons = []
+
+    def toggle_log(force=None):
+        want = (not state.get("log_open", False)) if force is None else force
+        state["log_open"] = want
+        if want:
+            log_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 6), before=nb)
+            log_btn.configure(text="Hide log")
+            log.see("end")
+        else:
+            log_frame.pack_forget()
+            log_btn.configure(text="Show log")
 
     def write(text):
         log.configure(state="normal")
@@ -275,6 +400,10 @@ def main():
             b.configure(state="disabled" if busy else "normal")
         stop_btn.configure(state="normal" if busy else "disabled")
         status.set("Running..." if busy else "Idle")
+        if busy:
+            progress.start(14)
+        else:
+            progress.stop()
 
     def reader(proc):
         for line in proc.stdout:
@@ -290,6 +419,8 @@ def main():
                     state["last_rc"] = item[1]
                     state["proc"] = None
                     set_busy(False)
+                    if item[1] != 0 and not state["stopping"]:
+                        toggle_log(True)  # something went wrong: show the details
                     for h in hooks:
                         h()
                     cb, state["on_done"] = state["on_done"], None
@@ -297,6 +428,8 @@ def main():
                         cb()
                 else:
                     write(item)
+                    if item.strip():
+                        last_line.set(item.strip()[:140])
         except queue.Empty:
             pass
         root.after(150, poll)
@@ -309,6 +442,8 @@ def main():
             STOP_FILE.unlink()
         write("\n$ " + " ".join(f'"{a}"' if " " in a else a for a in cmd) + "\n")
         state["last_cmd"] = cmd
+        state["stopping"] = False
+        last_line.set("")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             proc = subprocess.Popen([sys.executable, "-u", *cmd], cwd=HERE, stdout=subprocess.PIPE,
@@ -326,6 +461,7 @@ def main():
         p = state["proc"]
         if not p:
             return
+        state["stopping"] = True
         if state["graceful"] and not STOP_FILE.exists():
             STOP_FILE.touch()
             write("Stop requested: finishing up (kills AC, keeps saved results)...\n")
@@ -361,9 +497,9 @@ def main():
             return False
         return True
 
-    # --- widgets ---
+    # --- widget helpers ---
     def entry_row(parent, r, label, key, browse=None, width=60):
-        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=6, pady=3)
+        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=(4, 10), pady=3)
         ttk.Entry(parent, textvariable=vars_[key], width=width).grid(row=r, column=1, sticky="ew", pady=3)
         if browse == "dir":
             cmd = lambda: vars_[key].set(filedialog.askdirectory(initialdir=vars_[key].get() or None) or vars_[key].get())
@@ -371,47 +507,76 @@ def main():
             cmd = lambda: vars_[key].set(filedialog.askopenfilename() or vars_[key].get())
         else:
             return
-        ttk.Button(parent, text="Browse", command=cmd).grid(row=r, column=2, padx=6)
+        ttk.Button(parent, text="Browse", command=cmd).grid(row=r, column=2, padx=(8, 4))
 
-    def btn(parent, text, command, r, c, span=1):
-        b = ttk.Button(parent, text=text, command=command)
-        b.grid(row=r, column=c, columnspan=span, padx=6, pady=6, sticky="w")
+    def btn(parent, text, command, r, c, span=1, accent=False):
+        b = ttk.Button(parent, text=text, command=command, style="Accent.TButton" if accent else "TButton")
+        b.grid(row=r, column=c, columnspan=span, padx=(0, 8), pady=6, sticky="w")
         run_buttons.append(b)
         return b
 
+    def pbtn(parent, text, command, accent=False, side="left"):
+        """Pack-style button that is disabled while a job runs."""
+        b = ttk.Button(parent, text=text, command=command, style="Accent.TButton" if accent else "TButton")
+        b.pack(side=side, padx=(0, 8))
+        run_buttons.append(b)
+        return b
+
+    def group(parent, title):
+        f = ttk.LabelFrame(parent, text=title, padding=10)
+        f.pack(fill="x", pady=(0, 10))
+        f.columnconfigure(1, weight=1)
+        return f
+
     nb = ttk.Notebook(root)
 
-    # Tab 1: benchmark
-    t1 = ttk.Frame(nb)
-    t1.columnconfigure(1, weight=1)
-    entry_row(t1, 0, "Assetto Corsa folder", "ac_dir", "dir")
-    entry_row(t1, 1, "Documents/Assetto Corsa", "docs_dir", "dir")
-    entry_row(t1, 2, "Template race.ini", "template", "file")
-    entry_row(t1, 3, "Batch grouping CSV (optional)", "group_by", "file")
+    # ======== Tab: Benchmark ========
+    t1 = ttk.Frame(nb, padding=12)
+
+    paths = group(t1, "Paths")
+    entry_row(paths, 0, "Assetto Corsa folder", "ac_dir", "dir")
+    entry_row(paths, 1, "Documents/Assetto Corsa", "docs_dir", "dir")
+    entry_row(paths, 2, "Template race.ini", "template", "file")
+    entry_row(paths, 3, "Batch grouping CSV (optional)", "group_by", "file")
     ttk.Label(t1, text="Fixed baseline (set in the tool, not editable): " + bl_describe(),
-              wraplength=800, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=3)
-    nums = ttk.Frame(t1)
-    nums.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=3)
+              style="Muted.TLabel", wraplength=900, justify="left").pack(fill="x", pady=(0, 10))
+
+    sel = group(t1, "Which cars")
+    entry_row(sel, 0, "Only car ids matching (regex)", "include")
+    entry_row(sel, 1, "Skip car ids matching (regex)", "exclude")
+    rr = ttk.Frame(sel)
+    rr.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    ttk.Label(rr, text="Cars that already have results:").grid(row=0, column=0, sticky="w", padx=(4, 12))
+    ttk.Radiobutton(rr, text="Skip them", variable=vars_["rerun_mode"], value="skip").grid(row=0, column=1, sticky="w")
+    ttk.Radiobutton(rr, text="Rerun all selected", variable=vars_["rerun_mode"], value="all").grid(row=0, column=2, sticky="w", padx=12)
+    ttk.Radiobutton(rr, text="Rerun only these ids:", variable=vars_["rerun_mode"], value="ids").grid(row=0, column=3, sticky="w")
+    ttk.Entry(rr, textvariable=vars_["rerun_ids"], width=30).grid(row=0, column=4, padx=6)
+    ttk.Checkbutton(rr, text="Also retry cars that failed before", variable=vars_["retry_failed"]).grid(
+        row=1, column=1, columnspan=4, sticky="w", pady=(4, 0))
+    entry_row(sel, 3, "Probe car ids (space separated)", "probe_ids")
+
+    opts = group(t1, "Run options")
+    nums = ttk.Frame(opts)
+    nums.grid(row=0, column=0, columnspan=3, sticky="w")
     ttk.Label(nums, text="Cars per pack").pack(side="left")
-    ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=vars_["batch"]).pack(side="left", padx=4)
-    ttk.Label(nums, text="A pack runs on BOTH tracks before the next pack. 1 = cleanest baseline (one car on track); more is faster but cars share the track"
-              ).pack(side="left", padx=8)
-    entry_row(t1, 7, "Only car ids matching (regex)", "include")
-    entry_row(t1, 8, "Skip car ids matching (regex)", "exclude")
-    rr = ttk.LabelFrame(t1, text="Cars that already have results")
-    rr.grid(row=9, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
-    ttk.Radiobutton(rr, text="Skip them (default)", variable=vars_["rerun_mode"], value="skip").grid(row=0, column=0, sticky="w")
-    ttk.Radiobutton(rr, text="Rerun all selected", variable=vars_["rerun_mode"], value="all").grid(row=0, column=1, sticky="w", padx=12)
-    ttk.Radiobutton(rr, text="Rerun only these ids:", variable=vars_["rerun_mode"], value="ids").grid(row=0, column=2, sticky="w")
-    ttk.Entry(rr, textvariable=vars_["rerun_ids"], width=34).grid(row=0, column=3, padx=6, pady=3)
-    ttk.Checkbutton(rr, text="Also retry cars that failed before", variable=vars_["retry_failed"]).grid(row=1, column=0, columnspan=4, sticky="w")
-    entry_row(t1, 10, "Probe car ids (space separated)", "probe_ids")
+    ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=vars_["batch"]).pack(side="left", padx=6)
+    ttk.Label(nums, style="Muted.TLabel", wraplength=700, justify="left",
+              text="A pack runs on BOTH tracks before the next pack. 1 = cleanest baseline (one car on track); "
+                   "more is faster but cars share the track.").pack(side="left", padx=8)
+    af = ttk.Frame(opts)
+    af.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    ttk.Checkbutton(af, text="Auto-click the Drive button (bypass the Drive menu)",
+                    variable=vars_["auto_drive"]).grid(row=0, column=0, sticky="w")
+    ttk.Label(af, text="first try after (s)").grid(row=0, column=1, padx=(14, 4))
+    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["click_delay"]).grid(row=0, column=2)
+    ttk.Label(af, text="also press key").grid(row=0, column=3, padx=(14, 4))
+    ttk.Entry(af, textvariable=vars_["press_key"], width=8).grid(row=0, column=4)
 
     def do_calibrate():
         messagebox.showinfo("Calibrate Drive button",
-            "1. Start AC (windowed/borderless) until the Drive menu shows, e.g. from Content Manager.\n"
-            "2. Hover the mouse over the Drive button.\n"
-            "3. Press F8.\n\nClick OK, then do those steps (waits up to 3 minutes).")
+                            "1. Start AC (windowed/borderless) until the Drive menu shows, e.g. from Content Manager.\n"
+                            "2. Hover the mouse over the Drive button.\n"
+                            "3. Press F8.\n\nClick OK, then do those steps (waits up to 3 minutes).")
         run(["ac_input.py", "calibrate"])
 
     def do_probe():
@@ -424,121 +589,25 @@ def main():
         if c:
             run(bench_cmd(c, ["--dry-run"] if dry else []), graceful=True)
 
-    af = ttk.LabelFrame(t1, text="Start races automatically (bypass the Drive menu)")
-    af.grid(row=11, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
-    ttk.Checkbutton(af, text="Auto-click the Drive button", variable=vars_["auto_drive"]).grid(row=0, column=0, sticky="w")
-    ttk.Label(af, text="first try after (s)").grid(row=0, column=1, padx=(12, 2))
-    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["click_delay"]).grid(row=0, column=2)
-    ttk.Label(af, text="also press key").grid(row=0, column=3, padx=(12, 2))
-    ttk.Entry(af, textvariable=vars_["press_key"], width=8).grid(row=0, column=4)
-    btn(af, "Calibrate Drive button", do_calibrate, 1, 0, 2)
-    btn(af, "Test click", lambda: run(["ac_input.py", "click"]), 1, 2, 3)
+    btn(af, "Calibrate Drive button", do_calibrate, 1, 0)
+    btn(af, "Test click", lambda: run(["ac_input.py", "click"]), 1, 1, 2)
 
     bf = ttk.Frame(t1)
-    bf.grid(row=12, column=0, columnspan=3, sticky="w")
-    btn(bf, "Probe cars", do_probe, 0, 0)
-    btn(bf, "Dry run (count jobs)", lambda: do_bench(True), 0, 1)
-    btn(bf, "Start benchmark", do_bench, 0, 2)
-    nb.add(t1, text="1  Benchmark")
+    bf.pack(fill="x")
+    pbtn(bf, "Start benchmark", do_bench, accent=True)
+    pbtn(bf, "Dry run (count jobs)", lambda: do_bench(True))
+    pbtn(bf, "Probe cars", do_probe)
+    nb.add(t1, text="Benchmark")
 
-    # Tab: cars list
-    tc = ttk.Frame(nb)
+    # ======== Tab: Cars (Local cars | Server cars) ========
+    tc = ttk.Frame(nb, padding=10)
     tc.columnconfigure(0, weight=1)
-    tc.rowconfigure(1, weight=1)
-    top = ttk.Frame(tc)
-    top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
-    filt, stat_f, count = tk.StringVar(), tk.StringVar(value="All"), tk.StringVar()
-    ttk.Label(top, text="Filter").pack(side="left")
-    ttk.Entry(top, textvariable=filt, width=24).pack(side="left", padx=(4, 10))
-    stat_box = ttk.Combobox(top, textvariable=stat_f, state="readonly", width=10,
-                            values=["All", "Rated", "Not rated", "Partial", "Failed", "Old settings", "Flagged"])
-    stat_box.pack(side="left")
-    ttk.Label(top, textvariable=count).pack(side="right")
+    tc.rowconfigure(0, weight=1)
+    sub = ttk.Notebook(tc)
+    sub.grid(row=0, column=0, sticky="nsew")
 
-    cols = ("name", "id", "cls", "gap", "t1", "t2", "status", "flags")
-    tree = ttk.Treeview(tc, columns=cols, show="headings", height=11, selectmode="extended")
-    for k, w in zip(cols, (200, 150, 50, 60, 100, 100, 110, 230)):
-        tree.column(k, width=w, anchor="w" if k in ("name", "id", "status", "flags") else "e")
-    sbar = ttk.Scrollbar(tc, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=sbar.set)
-    tree.grid(row=1, column=0, sticky="nsew", padx=(6, 0))
-    sbar.grid(row=1, column=1, sticky="ns")
-
-    def fmt_t(row, i):
-        return "" if i >= len(row["times"]) or row["times"][i] is None else f"{row['times'][i]:.3f}"
-
-    def render(*_):
-        c = cfg()
-        names = {"name": "Car", "id": "Folder id", "cls": "Class", "gap": "Gap %",
-                 "t1": (c["track1"].strip() or "track 1") + " (median s)",
-                 "t2": (c["track2"].strip() or "track 2") + " (median s)", "status": "Status", "flags": "Flags"}
-        col, rev = state["sort"]
-        for k, v in names.items():
-            tree.heading(k, text=v + ((" v" if rev else " ^") if k == col else ""),
-                         command=lambda k=k: sort_by(k))
-        text, sf = filt.get().strip().lower(), stat_f.get()
-
-        def keep(r):
-            if text and text not in r["id"].lower() and text not in r["name"].lower():
-                return False
-            s = r["status"]
-            return (sf == "All" or (sf == "Rated" and s.startswith("rated"))
-                    or (sf == "Not rated" and not s.startswith("rated"))
-                    or (sf == "Partial" and s.startswith("partial")) or (sf == "Failed" and s == "failed")
-                    or (sf == "Old settings" and "old settings" in s) or (sf == "Flagged" and bool(r["flags"])))
-
-        def val(r):
-            if col == "cls":
-                return class_sort_key(r["cls"]) if r["cls"] else None
-            if col == "gap":
-                return r["gap"]
-            if col in ("t1", "t2"):
-                i = 0 if col == "t1" else 1
-                return r["times"][i] if i < len(r["times"]) else None
-            return str(r[col]).lower()
-
-        rows = [r for r in state["rows"] if keep(r)]
-        have = sorted((r for r in rows if val(r) is not None), key=val, reverse=rev)
-        rows = have + [r for r in rows if val(r) is None]
-        sel = set(tree.selection())
-        tree.delete(*tree.get_children())
-        for r in rows:
-            tree.insert("", "end", iid=r["id"], values=(
-                r["name"], r["id"], r["cls"] or "", "" if r["gap"] is None else f"{r['gap']:.2f}",
-                fmt_t(r, 0), fmt_t(r, 1), r["status"], r["flags"]))
-        keep_sel = [i for i in sel if tree.exists(i)]
-        if keep_sel:
-            tree.selection_set(keep_sel)
-        n_rated = sum(1 for r in state["rows"] if r["status"].startswith("rated"))
-        n_old = sum(1 for r in state["rows"] if "old settings" in r["status"])
-        extra = f" ({n_old} made with old settings)" if n_old else ""
-        count.set(f"{len(rows)} shown / {len(state['rows'])} cars / {n_rated} rated{extra}")
-
-    def sort_by(k):
-        col, rev = state["sort"]
-        state["sort"] = (k, not rev if k == col else False)
-        render()
-
-    def cars_refresh(rescan=False):
-        c = cfg()
-        if rescan or state["cars_dir"] != c["ac_dir"]:
-            count.set("loading cars...")
-            root.update_idletasks()
-            state["cars"], state["cars_dir"] = load_car_names(c["ac_dir"]), c["ac_dir"]
-        try:
-            results = json.loads(RESULTS.read_text(encoding="utf-8")) if RESULTS.exists() else {}
-        except Exception:
-            results = {}
-        state["rows"] = build_rows(state["cars"], results, [c["track1"], c["track2"]], c["class_gap"],
-                                   int(c["min_class_size"]), int(c["fixed_classes"]))
-        render()
-
-    hooks.append(cars_refresh)
-    filt.trace_add("write", render)
-    stat_box.bind("<<ComboboxSelected>>", render)
-
-    def do_bench_selected():
-        ids = list(tree.selection())
+    def do_bench_selected(s):
+        ids = list(s["tree"].selection())
         if not ids:
             messagebox.showinfo("Select cars", "Select one or more cars in the list first.")
             return
@@ -550,21 +619,181 @@ def main():
             return
         run(probe_cmd(c, ids), graceful=True)
 
-    cf = ttk.Frame(tc)
-    cf.grid(row=2, column=0, columnspan=2, sticky="w", padx=6)
-    btn(cf, "Benchmark selected cars", do_bench_selected, 0, 0)
-    ttk.Button(cf, text="Select all shown", command=lambda: tree.selection_set(tree.get_children())).grid(row=0, column=1, padx=6)
-    ttk.Button(cf, text="Clear selection", command=lambda: tree.selection_remove(tree.selection())).grid(row=0, column=2)
-    ttk.Button(cf, text="Refresh", command=lambda: cars_refresh(rescan=True)).grid(row=0, column=3, padx=6)
-    ttk.Label(cf, text="Selected cars run on every track, even if already rated.").grid(row=0, column=4, padx=6)
-    nb.add(tc, text="2  Cars")
+    def make_section(kind):
+        local = kind == "local"
+        s = {"kind": kind, "rows": [], "sort": ("gap", False)}
+        fr = ttk.Frame(sub, padding=(0, 10, 0, 0))
+        fr.columnconfigure(0, weight=1)
+        fr.rowconfigure(1, weight=1)
+        s["frame"] = fr
 
-    # Tab 3: classes
-    t2 = ttk.Frame(nb)
-    t2.columnconfigure(1, weight=1)
-    ttk.Label(t2, text="Max spread inside a class (% of lap time)").grid(row=0, column=0, sticky="w", padx=6, pady=6)
-    ttk.Spinbox(t2, from_=0.5, to=10, increment=0.5, width=6, textvariable=vars_["class_gap"]).grid(row=0, column=1, sticky="w")
-    ttk.Checkbutton(t2, text="Include cars with only some tracks", variable=vars_["allow_partial"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=6)
+        top = ttk.Frame(fr)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        s["filt"], s["stat"] = tk.StringVar(), tk.StringVar(value="All")
+        s["count"], s["info"] = tk.StringVar(), tk.StringVar()
+        ttk.Label(top, text="Filter").pack(side="left")
+        ttk.Entry(top, textvariable=s["filt"], width=26).pack(side="left", padx=(6, 14))
+        ttk.Label(top, text="Show").pack(side="left")
+        box = ttk.Combobox(top, textvariable=s["stat"], state="readonly", width=16,
+                           values=LOCAL_FILTERS if local else SERVER_FILTERS)
+        box.pack(side="left", padx=6)
+        ttk.Label(top, textvariable=s["count"], style="Muted.TLabel").pack(side="right")
+
+        if local:
+            cols = ("name", "id", "cls", "gap", "t1", "t2", "status", "flags")
+            widths = (210, 150, 60, 70, 110, 110, 130, 230)
+        else:
+            cols = ("name", "id", "cls", "gap", "t1", "t2", "var", "status", "bop", "flags")
+            widths = (210, 150, 60, 70, 110, 110, 70, 110, 60, 200)
+        left = ("name", "id", "status", "flags", "bop")
+        tree = ttk.Treeview(fr, columns=cols, show="headings", height=11, selectmode="extended")
+        for k, w in zip(cols, widths):
+            tree.column(k, width=w, anchor="w" if k in left else ("center" if k == "cls" else "e"))
+        tree.tag_configure("odd", background="#f6f8fa")
+        tree.tag_configure("ok", foreground="#1a7f37")
+        tree.tag_configure("warn", foreground="#9a6700")
+        tree.tag_configure("bad", foreground="#cf222e")
+        tree.tag_configure("dim", foreground="#6e7781")
+        sbar = ttk.Scrollbar(fr, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sbar.set)
+        tree.grid(row=1, column=0, sticky="nsew")
+        sbar.grid(row=1, column=1, sticky="ns")
+        s["tree"] = tree
+
+        def fmt_t(row, i):
+            return "" if i >= len(row["times"]) or row["times"][i] is None else f"{row['times'][i]:.3f}"
+
+        def sort_by(k):
+            col, rev = s["sort"]
+            s["sort"] = (k, not rev if k == col else False)
+            render()
+
+        def render(*_):
+            c = cfg()
+            names = {"name": "Car", "id": "Folder id", "cls": "Class", "gap": "Gap %",
+                     "t1": (c["track1"].strip() or "track 1") + " (median s)",
+                     "t2": (c["track2"].strip() or "track 2") + " (median s)",
+                     "var": "Var %", "status": "Status", "bop": "BoP", "flags": "Flags"}
+            col, rev = s["sort"]
+            for k in cols:
+                tree.heading(k, text=names[k] + ((" v" if rev else " ^") if k == col else ""),
+                             command=lambda k=k: sort_by(k))
+            text, sf = s["filt"].get().strip().lower(), s["stat"].get()
+
+            def val(r):
+                if col == "cls":
+                    return class_sort_key(r["cls"]) if r["cls"] else None
+                if col == "gap":
+                    return r["gap"]
+                if col in ("t1", "t2"):
+                    i = 0 if col == "t1" else 1
+                    return r["times"][i] if i < len(r["times"]) else None
+                if col == "var":
+                    return r.get("variance")
+                return str(r.get(col, "")).lower()
+
+            rows = [r for r in s["rows"] if row_matches(kind, r, text, sf)]
+            have = sorted((r for r in rows if val(r) is not None), key=val, reverse=rev)
+            rows = have + [r for r in rows if val(r) is None]
+            selected = set(tree.selection())
+            tree.delete(*tree.get_children())
+            for n, r in enumerate(rows):
+                vals = [r["name"], r["id"], r["cls"] or "", "" if r["gap"] is None else f"{r['gap']:.2f}",
+                        fmt_t(r, 0), fmt_t(r, 1)]
+                if not local:
+                    vals.append("" if r.get("variance") is None else f"{r['variance']:.2f}")
+                vals += [r["status"]] + ([] if local else [r.get("bop", "")]) + [r["flags"]]
+                tags = (status_tag(r["status"]),) + (("odd",) if n % 2 else ())
+                tree.insert("", "end", iid=r["id"], values=vals, tags=tags)
+            keep_sel = [i for i in selected if tree.exists(i)]
+            if keep_sel:
+                tree.selection_set(keep_sel)
+            total = len(s["rows"])
+            if local:
+                n_ok = sum(1 for r in s["rows"] if r["status"].startswith("rated"))
+                n_old = sum(1 for r in s["rows"] if "old settings" in r["status"])
+                extra = f" ({n_old} made with old settings)" if n_old else ""
+                s["count"].set(f"{len(rows)} shown / {total} cars / {n_ok} rated{extra}")
+                title = f"Local cars ({n_ok} rated)"
+            else:
+                n_ok = sum(1 for r in s["rows"] if r["cls"])
+                s["count"].set(f"{len(rows)} shown / {total} cars / {n_ok} with a server class")
+                title = f"Server cars ({n_ok} classed)"
+            try:
+                sub.tab(fr, text=title)
+            except tk.TclError:
+                pass
+
+        s["render"] = render
+        s["filt"].trace_add("write", render)
+        box.bind("<<ComboboxSelected>>", render)
+
+        bar_ = ttk.Frame(fr)
+        bar_.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        pbtn(bar_, "Benchmark selected cars", lambda: do_bench_selected(s), accent=True)
+        if not local:
+            pbtn(bar_, "Download server classes", lambda: do_cloud("sync"))
+            pbtn(bar_, "Benchmark cars missing from server", lambda: do_missing())
+        ttk.Button(bar_, text="Refresh", command=lambda: cars_refresh(rescan=True)).pack(side="right")
+        ttk.Button(bar_, text="Clear selection",
+                   command=lambda: tree.selection_remove(tree.selection())).pack(side="right", padx=(0, 8))
+        ttk.Button(bar_, text="Select all shown",
+                   command=lambda: tree.selection_set(tree.get_children())).pack(side="right", padx=(0, 8))
+        ttk.Label(fr, textvariable=s["info"], style="Muted.TLabel").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        return s
+
+    local_sec = make_section("local")
+    server_sec = make_section("server")
+    sub.add(local_sec["frame"], text="Local cars")
+    sub.add(server_sec["frame"], text="Server cars")
+
+    def cars_refresh(rescan=False):
+        c = cfg()
+        if rescan or state["cars_dir"] != c["ac_dir"]:
+            local_sec["count"].set("loading cars...")
+            server_sec["count"].set("loading cars...")
+            root.update_idletasks()
+            state["cars"], state["cars_dir"] = load_car_names(c["ac_dir"]), c["ac_dir"]
+        try:
+            results = json.loads(RESULTS.read_text(encoding="utf-8")) if RESULTS.exists() else {}
+        except Exception:
+            results = {}
+        tracks = [c["track1"], c["track2"]]
+        local_sec["rows"] = build_rows(state["cars"], results, tracks, c["class_gap"],
+                                       int(c["min_class_size"]), int(c["fixed_classes"]))
+        server_sec["rows"] = load_cloud_rows(state["cars"], CLOUD_CLASSES, tracks)
+        local_sec["info"].set("Ratings from your own benchmark results (lap_results.json). "
+                              "Selected cars run on every track, even if already rated.")
+        if CLOUD_CLASSES.exists():
+            stamp = datetime.fromtimestamp(CLOUD_CLASSES.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            server_sec["info"].set(f"Classes downloaded from the server on {stamp} "
+                                   "(verified only unless the Server tab says otherwise).")
+        else:
+            server_sec["info"].set("No server classes downloaded yet. Press 'Download server classes'.")
+        local_sec["render"]()
+        server_sec["render"]()
+
+    hooks.append(cars_refresh)
+    nb.add(tc, text="Cars")
+
+    # ======== Tab: Classes ========
+    t2 = ttk.Frame(nb, padding=12)
+    cl = group(t2, "Class settings")
+    ttk.Label(cl, text="Max spread inside a class (% of lap time)").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+    ttk.Spinbox(cl, from_=0.5, to=10, increment=0.5, width=6, textvariable=vars_["class_gap"]).grid(row=0, column=1, sticky="w")
+    ttk.Checkbutton(cl, text="Include cars with only some tracks", variable=vars_["allow_partial"]).grid(
+        row=1, column=0, columnspan=2, sticky="w", padx=4)
+
+    adv = group(t2, "Class assignment (natural breaks, see grid_dynamics.txt)")
+    ttk.Label(adv, text="Min cars per class").grid(row=0, column=0, sticky="w", padx=4, pady=3)
+    ttk.Spinbox(adv, from_=1, to=30, width=6, textvariable=vars_["min_class_size"]).grid(row=0, column=1, sticky="w")
+    ttk.Label(adv, text="Force exactly N classes (0 = automatic)").grid(row=1, column=0, sticky="w", padx=4, pady=3)
+    ttk.Spinbox(adv, from_=0, to=60, width=6, textvariable=vars_["fixed_classes"]).grid(row=1, column=1, sticky="w")
+    ttk.Label(adv, text="Borderline zone (% of lap time)").grid(row=2, column=0, sticky="w", padx=4, pady=3)
+    ttk.Spinbox(adv, from_=0.0, to=1.0, increment=0.05, width=6, textvariable=vars_["tie_zone"]).grid(row=2, column=1, sticky="w")
+    ttk.Label(adv, text="BoP sensitivity (optional, % lap time per % power-to-weight)").grid(row=3, column=0, sticky="w", padx=4, pady=3)
+    ttk.Entry(adv, textvariable=vars_["bop_sens"], width=8).grid(row=3, column=1, sticky="w")
 
     def do_classify():
         c = cfg()
@@ -580,36 +809,30 @@ def main():
                     write("Batch grouping CSV set to the estimate file.\n")
             run(estimate_cmd(c), on_done=fill)
 
-    adv = ttk.LabelFrame(t2, text="Class assignment (natural breaks, see grid_dynamics.txt)")
-    adv.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
-    ttk.Label(adv, text="Min cars per class").grid(row=0, column=0, sticky="w", padx=4, pady=2)
-    ttk.Spinbox(adv, from_=1, to=30, width=5, textvariable=vars_["min_class_size"]).grid(row=0, column=1, sticky="w")
-    ttk.Label(adv, text="Force exactly N classes (0 = automatic)").grid(row=1, column=0, sticky="w", padx=4, pady=2)
-    ttk.Spinbox(adv, from_=0, to=60, width=5, textvariable=vars_["fixed_classes"]).grid(row=1, column=1, sticky="w")
-    ttk.Label(adv, text="Borderline zone (% of lap time)").grid(row=2, column=0, sticky="w", padx=4, pady=2)
-    ttk.Spinbox(adv, from_=0.0, to=1.0, increment=0.05, width=5, textvariable=vars_["tie_zone"]).grid(row=2, column=1, sticky="w")
-    ttk.Label(adv, text="BoP sensitivity (optional, % lap time per % power-to-weight)").grid(row=3, column=0, sticky="w", padx=4, pady=2)
-    ttk.Entry(adv, textvariable=vars_["bop_sens"], width=7).grid(row=3, column=1, sticky="w")
-    btn(t2, "Rate cars from lap results", do_classify, 2, 0)
-    btn(t2, "Quick estimate from car data (no game, for batch grouping)", do_estimate, 3, 0, 2)
-    ttk.Label(t2, text="Writes car_classes.csv next to this program (flags and BoP hints are columns in it).\nThe grid and tag steps read that file.").grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=8)
-    nb.add(t2, text="3  Classes")
+    cb_ = ttk.Frame(t2)
+    cb_.pack(fill="x")
+    pbtn(cb_, "Rate cars from lap results", do_classify, accent=True)
+    pbtn(cb_, "Quick estimate from car data (no game, for batch grouping)", do_estimate)
+    ttk.Label(t2, style="Muted.TLabel", justify="left",
+              text="Writes car_classes.csv next to this program (flags and BoP hints are columns in it).\n"
+                   "The grid and tag steps read that file.").pack(anchor="w", pady=10)
+    nb.add(t2, text="Classes")
 
-    # Tab 3: grid
-    t3 = ttk.Frame(nb)
-    t3.columnconfigure(1, weight=1)
-    g = ttk.Frame(t3)
-    g.grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=6)
+    # ======== Tab: Grid ========
+    t3 = ttk.Frame(nb, padding=12)
+    gg = group(t3, "Grid")
+    g = ttk.Frame(gg)
+    g.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
     ttk.Label(g, text="Cars").pack(side="left")
-    ttk.Spinbox(g, from_=2, to=60, width=5, textvariable=vars_["grid_size"]).pack(side="left", padx=(4, 16))
+    ttk.Spinbox(g, from_=2, to=60, width=5, textvariable=vars_["grid_size"]).pack(side="left", padx=(6, 18))
     ttk.Label(g, text="Max spread (%)").pack(side="left")
-    ttk.Spinbox(g, from_=0.5, to=20, increment=0.5, width=6, textvariable=vars_["grid_gap"]).pack(side="left", padx=4)
-    ttk.Checkbutton(g, text="Tightest possible", variable=vars_["grid_tightest"]).pack(side="left", padx=16)
-    entry_row(t3, 1, "Only classes (e.g. A B)", "grid_class")
-    entry_row(t3, 2, "Center on car id", "grid_around")
-    entry_row(t3, 3, "Only car ids matching (regex)", "grid_include")
-    entry_row(t3, 4, "Skip car ids matching (regex)", "grid_exclude")
-    entry_row(t3, 5, "Random seed (optional)", "grid_seed", width=12)
+    ttk.Spinbox(g, from_=0.5, to=20, increment=0.5, width=6, textvariable=vars_["grid_gap"]).pack(side="left", padx=6)
+    ttk.Checkbutton(g, text="Tightest possible", variable=vars_["grid_tightest"]).pack(side="left", padx=18)
+    entry_row(gg, 1, "Only classes (e.g. A B)", "grid_class")
+    entry_row(gg, 2, "Center on car id", "grid_around")
+    entry_row(gg, 3, "Only car ids matching (regex)", "grid_include")
+    entry_row(gg, 4, "Skip car ids matching (regex)", "grid_exclude")
+    entry_row(gg, 5, "Random seed (optional)", "grid_seed", width=12)
 
     def do_grid():
         if need_csv(classes_path(cfg())):
@@ -620,20 +843,21 @@ def main():
             run(grid_cmd(cfg(), list_only=True))
 
     gf = ttk.Frame(t3)
-    gf.grid(row=6, column=0, columnspan=3, sticky="w")
-    btn(gf, "Show classes", do_list, 0, 0)
-    btn(gf, "Build grid", do_grid, 0, 1)
-    b = ttk.Button(gf, text="Open results folder", command=lambda: os.startfile(HERE) if os.name == "nt" else None)
-    b.grid(row=0, column=2, padx=6)
-    nb.add(t3, text="4  Grid")
+    gf.pack(fill="x")
+    pbtn(gf, "Build grid", do_grid, accent=True)
+    pbtn(gf, "Show classes", do_list)
+    ttk.Button(gf, text="Open results folder",
+               command=lambda: os.startfile(HERE) if os.name == "nt" else None).pack(side="left")
+    nb.add(t3, text="Grid")
 
-    # Tab 4: tags
-    t4 = ttk.Frame(nb)
-    t4.columnconfigure(1, weight=1)
-    entry_row(t4, 0, "Tag prefix", "tag_prefix", width=30)
-    entry_row(t4, 1, "Skip car ids matching (regex)", "tag_exclude")
-    ttk.Label(t4, text="Writes class tags into each car's ui_car.json (backups kept as .gridbak).\n"
-                       "Skip cars you also race online.").grid(row=2, column=0, columnspan=3, sticky="w", padx=6, pady=4)
+    # ======== Tab: CM tags ========
+    t4 = ttk.Frame(nb, padding=12)
+    tg = group(t4, "Content Manager tags")
+    entry_row(tg, 0, "Tag prefix", "tag_prefix", width=30)
+    entry_row(tg, 1, "Skip car ids matching (regex)", "tag_exclude")
+    ttk.Label(t4, style="Muted.TLabel", justify="left",
+              text="Writes class tags into each car's ui_car.json (backups kept as .gridbak).\n"
+                   "Skip cars you also race online.").pack(anchor="w", pady=(0, 10))
 
     def do_tags(mode):
         c = need("ac_dir", "tag_prefix")
@@ -647,24 +871,23 @@ def main():
         run(tag_cmd(c, mode))
 
     tf = ttk.Frame(t4)
-    tf.grid(row=3, column=0, columnspan=3, sticky="w")
-    btn(tf, "Dry run", lambda: do_tags("dry"), 0, 0)
-    btn(tf, "Apply tags", lambda: do_tags("apply"), 0, 1)
-    btn(tf, "Remove tags", lambda: do_tags("untag"), 0, 2)
-    btn(tf, "Restore backups", lambda: do_tags("restore"), 0, 3)
-    nb.add(t4, text="5  CM tags")
+    tf.pack(fill="x")
+    pbtn(tf, "Dry run", lambda: do_tags("dry"))
+    pbtn(tf, "Apply tags", lambda: do_tags("apply"), accent=True)
+    pbtn(tf, "Remove tags", lambda: do_tags("untag"))
+    pbtn(tf, "Restore backups", lambda: do_tags("restore"))
+    nb.add(t4, text="CM tags")
 
-    # Tab 6: vanilla check
-    tv = ttk.Frame(nb)
-    tv.columnconfigure(1, weight=1)
-    entry_row(tv, 0, "Reference file", "reference", "file")
-    ttk.Checkbutton(tv, text="Ignore UI/preview files (they do not affect lap times)",
-                    variable=vars_["ignore_ui"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=6)
-    ttk.Checkbutton(tv, text="Skip this check when benchmarking (not recommended: ratings may not be comparable)",
-                    variable=vars_["skip_vanilla"]).grid(row=2, column=0, columnspan=3, sticky="w", padx=6)
+    # ======== Tab: Vanilla check ========
+    tv = ttk.Frame(nb, padding=12)
+    vg = group(tv, "Reference")
+    entry_row(vg, 0, "Reference file", "reference", "file")
+    ttk.Checkbutton(vg, text="Ignore UI/preview files (they do not affect lap times)",
+                    variable=vars_["ignore_ui"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=4)
+    ttk.Checkbutton(vg, text="Skip this check when benchmarking (not recommended: ratings may not be comparable)",
+                    variable=vars_["skip_vanilla"]).grid(row=2, column=0, columnspan=3, sticky="w", padx=4)
     vstat = tk.StringVar(value="Not checked yet")
-    ttk.Label(tv, textvariable=vstat, font=("TkDefaultFont", 10, "bold")).grid(
-        row=3, column=0, columnspan=3, sticky="w", padx=6, pady=8)
+    ttk.Label(tv, textvariable=vstat, style="Bold.TLabel").pack(anchor="w", pady=(0, 8))
 
     def do_verify():
         c = need("ac_dir", "track1")
@@ -687,17 +910,17 @@ def main():
                                          "Installed Files > Verify integrity of game files.")
 
     vf = ttk.Frame(tv)
-    vf.grid(row=4, column=0, columnspan=3, sticky="w")
-    btn(vf, "Verify tracks now", do_verify, 0, 0)
-    btn(vf, "Create reference from this install", do_create, 0, 1)
-    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).grid(row=0, column=2, padx=6)
-    ttk.Label(tv, justify="left", text=(
+    vf.pack(fill="x")
+    pbtn(vf, "Verify tracks now", do_verify, accent=True)
+    pbtn(vf, "Create reference from this install", do_create)
+    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left")
+    ttk.Label(tv, justify="left", style="Muted.TLabel", text=(
         "Checks every file of the two fixed benchmark tracks against the reference, including the AI racing\n"
         "lines (ai/*.ai), plus acs.exe, which holds the AI driving code. Benchmarks run this check first and\n"
         "stop on any difference. Make the reference once on a clean install (Steam verify first; Steam does\n"
         "not delete extra files, this check reports them) and use the same reference file on every PC.\n"
         "Race conditions, AI level and aggression are fixed inside the tool. Not covered: cars, CSP itself.")
-    ).grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=8)
+              ).pack(anchor="w", pady=10)
 
     def vstatus_hook():
         cmd = state.get("last_cmd") or []
@@ -711,14 +934,14 @@ def main():
                 vstat.set("Reference created" if rc == 0 else "Reference creation failed (see log)")
 
     hooks.append(vstatus_hook)
-    nb.add(tv, text="6  Vanilla check")
+    nb.add(tv, text="Vanilla check")
 
-    # Tab 7: cloud
-    tcl = ttk.Frame(nb)
-    tcl.columnconfigure(1, weight=1)
-    entry_row(tcl, 0, "Server address (https://...)", "cloud_url")
-    entry_row(tcl, 1, "Your name (for registering)", "cloud_name", width=30)
-    entry_row(tcl, 2, "Invite code (for registering)", "cloud_invite", width=30)
+    # ======== Tab: Server ========
+    tcl = ttk.Frame(nb, padding=12)
+    sg = group(tcl, "Connection")
+    entry_row(sg, 0, "Server address (https://...)", "cloud_url")
+    entry_row(sg, 1, "Your name (for registering)", "cloud_name", width=30)
+    entry_row(sg, 2, "Invite code (for registering)", "cloud_invite", width=30)
     cloud_stat = tk.StringVar()
 
     def refresh_cloud_status():
@@ -728,20 +951,21 @@ def main():
             j = {}
         cloud_stat.set(("Registered as " + str(j.get("name", "?"))) if j.get("api_key") else "Not registered yet")
 
-    ttk.Label(tcl, textvariable=cloud_stat, font=("TkDefaultFont", 10, "bold")).grid(
-        row=3, column=0, columnspan=3, sticky="w", padx=6, pady=4)
-    ttk.Checkbutton(tcl, text="Also use classes backed by a single submission (less reliable)",
-                    variable=vars_["cloud_prov"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=6)
-    ttk.Checkbutton(tcl, text="Include results benchmarked before the cloud update (re-checks the vanilla tracks first)",
-                    variable=vars_["cloud_attest"]).grid(row=8, column=0, columnspan=3, sticky="w", padx=6)
+    ttk.Label(sg, textvariable=cloud_stat, style="Bold.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
+
+    sopt = group(tcl, "Options")
+    ttk.Checkbutton(sopt, text="Also use classes backed by a single submission (less reliable)",
+                    variable=vars_["cloud_prov"]).grid(row=0, column=0, sticky="w", padx=4)
+    ttk.Checkbutton(sopt, text="Include results benchmarked before the server update (re-checks the vanilla tracks first)",
+                    variable=vars_["cloud_attest"]).grid(row=1, column=0, sticky="w", padx=4)
 
     def do_cloud(action):
         c = cfg()
         if not c["cloud_url"].strip():
-            messagebox.showwarning("Cloud", "Fill in the server address first.")
+            messagebox.showwarning("Server", "Fill in the server address first (Server tab).")
             return
         if action == "register" and not (c["cloud_name"].strip() and c["cloud_invite"].strip()):
-            messagebox.showwarning("Cloud", "Registering needs your name and an invite code.")
+            messagebox.showwarning("Server", "Registering needs your name and an invite code.")
             return
         if action in ("upload", "sync") and not need("ac_dir"):
             return
@@ -757,49 +981,57 @@ def main():
             return
         ids = CLOUD_MISSING.read_text(encoding="utf-8").split() if CLOUD_MISSING.exists() else []
         if not ids:
-            messagebox.showinfo("Cloud", "Nothing to benchmark. Press 'Download and match classes' first; "
-                                         "it lists the cars the cloud has no class for.")
+            messagebox.showinfo("Server", "Nothing to benchmark. Press 'Download and match classes' first; "
+                                          "it lists the cars the server has no class for.")
             return
-        if len(ids) > 20 and not messagebox.askyesno("Cloud", f"{len(ids)} cars have no cloud class yet. Benchmark them all?"):
+        if len(ids) > 20 and not messagebox.askyesno("Server", f"{len(ids)} cars have no server class yet. Benchmark them all?"):
             return
         run(bench_cmd(c, ["--ids-file", str(CLOUD_MISSING)]), graceful=True)
 
     cf2 = ttk.Frame(tcl)
-    cf2.grid(row=5, column=0, columnspan=3, sticky="w")
-    btn(cf2, "Test connection", lambda: do_cloud("ping"), 0, 0)
-    btn(cf2, "Register", lambda: do_cloud("register"), 0, 1)
-    btn(cf2, "Upload my results", lambda: do_cloud("upload"), 0, 2)
-    btn(cf2, "Download and match classes", lambda: do_cloud("sync"), 0, 3)
-    btn(cf2, "Benchmark cars missing from the cloud", do_missing, 1, 0, 3)
-    src = ttk.LabelFrame(tcl, text="Which classes should the Grid and CM tags tabs use?")
-    src.grid(row=6, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+    cf2.pack(fill="x")
+    pbtn(cf2, "Test connection", lambda: do_cloud("ping"))
+    pbtn(cf2, "Register", lambda: do_cloud("register"))
+    pbtn(cf2, "Upload my results", lambda: do_cloud("upload"), accent=True)
+    pbtn(cf2, "Download and match classes", lambda: do_cloud("sync"), accent=True)
+    cf3 = ttk.Frame(tcl)
+    cf3.pack(fill="x", pady=(8, 10))
+    pbtn(cf3, "Benchmark cars missing from the server", do_missing)
+
+    src = ttk.LabelFrame(tcl, text="Which classes should the Grid and CM tags tabs use?", padding=10)
+    src.pack(fill="x", pady=(0, 10))
     ttk.Radiobutton(src, text="My own results (car_classes.csv)", variable=vars_["class_source"], value="local").grid(row=0, column=0, sticky="w")
-    ttk.Radiobutton(src, text="Cloud classes (car_classes_cloud.csv)", variable=vars_["class_source"], value="cloud").grid(row=0, column=1, sticky="w", padx=12)
-    ttk.Label(tcl, justify="left", text=(
+    ttk.Radiobutton(src, text="Server classes (car_classes_cloud.csv)", variable=vars_["class_source"], value="cloud").grid(row=0, column=1, sticky="w", padx=14)
+
+    ttk.Label(tcl, justify="left", style="Muted.TLabel", text=(
         "Upload sends only results driven on the verified vanilla setup (Vanilla check tab) under the current baseline.\n"
         "The server recomputes every score and rejects what does not validate; reasons appear in the log.\n"
-        "Download matches your cars to the cloud by the hash of their physics files (not the folder name), so a\n"
+        "Download matches your cars to the server by the hash of their physics files (not the folder name), so a\n"
         "modified or updated car is not given another car's class. Cars without a class are listed for benchmarking.")
-    ).grid(row=7, column=0, columnspan=3, sticky="w", padx=6, pady=6)
+              ).pack(anchor="w")
 
     def cloud_hook():
         refresh_cloud_status()
 
     hooks.append(cloud_hook)
     refresh_cloud_status()
-    nb.add(tcl, text="7  Cloud")
+    nb.add(tcl, text="Server")
 
-    nb.bind("<<NotebookTabChanged>>",
-            lambda e: cars_refresh() if nb.tab(nb.select(), "text").strip().endswith("Cars") else None)
-    nb.pack(fill="x", padx=8, pady=6)
+    nb.bind("<<NotebookTabChanged>>", lambda e: cars_refresh() if nb.select() == str(tc) else None)
 
-    bar = ttk.Frame(root)
-    bar.pack(fill="x", padx=8)
+    # ======== bottom bar ========
+    bar = ttk.Frame(root, padding=(10, 4))
+    bar.pack(side="bottom", fill="x")
+    nb.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+
+    log_btn = ttk.Button(bar, text="Show log", command=toggle_log)
+    log_btn.pack(side="right")
     stop_btn = ttk.Button(bar, text="Stop", command=stop, state="disabled")
     stop_btn.pack(side="left")
-    ttk.Button(bar, text="Clear log", command=lambda: (log.configure(state="normal"), log.delete("1.0", "end"), log.configure(state="disabled"))).pack(side="left", padx=6)
-    ttk.Label(bar, textvariable=status).pack(side="right")
-    log.pack(fill="both", expand=True, padx=8, pady=6)
+    progress = ttk.Progressbar(bar, mode="indeterminate", length=90)
+    progress.pack(side="left", padx=10)
+    ttk.Label(bar, textvariable=status, style="Bold.TLabel", width=12).pack(side="left")
+    ttk.Label(bar, textvariable=last_line, style="Muted.TLabel").pack(side="left", fill="x", expand=True, padx=(6, 10))
 
     def on_close():
         if state["proc"] and not messagebox.askyesno("Quit", "A job is running. Stop it and quit?"):
@@ -810,7 +1042,7 @@ def main():
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
-    write("Steps: 1 Benchmark (probe first), 2 Cars (ratings, benchmark selected), 3 Classes, 4 Grid, 5 CM tags.\n")
+    write("Ready.\n")
     poll()
     root.mainloop()
 
