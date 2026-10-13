@@ -21,6 +21,8 @@ This isolation lets you compare car performance directly without setup, weather,
 - **Track validation** (`ac_track_check.py`): verifies vanilla tracks and environment
 - **Lua logger** (`apps/lua/ac_bench/`): in-game script that logs AI lap times
 - **Upload client** (`ac_cloud.py`): prepares and sends results to the server
+TV Car to ensure consistency in the runs across multiple instances
+- TV Car by EmilioGQ https://www.overtake.gg/downloads/tv-car.45108/
 
 ## Quick start
 
