@@ -1,53 +1,225 @@
+#!/usr/bin/env python3
 """
-The fixed benchmark baseline. Everything that can change a lap time is pinned HERE, in code,
-so every car on every PC is measured under identical conditions. Nothing below is read from
-the template race.ini or from GUI settings; the runner overwrites those values in every race
-it writes. If you ever change anything in this file, bump PROFILE_ID: results are tagged with
-it, and results made under another profile are shown as "old settings" and are not mixed in
-silently.
+Benchmark conditions, as published by the server (GET /v1/conditions).
 
-The goal is a repeatable baseline to compare cars against each other, not the fastest lap.
+The app does not decide the baseline: profile, tracks, lap counts, batch limit and the canonical environment
+(digests of the vanilla track folders and of acs.exe) are all taken from the server. Every action that depends on
+them (benchmark, vanilla check, upload) fetches them first with If-None-Match; the last answer is kept in
+conditions_cache.json only so the server can reply "304 not modified". A cache older than 12 hours, or one fetched from
+another server, is refused: fetch again.
+
+  python ac_conditions.py fetch [--server https://example.org]
+  python ac_conditions.py show
+
+The server address is stored in cloud_config.json (shared with ac_cloud.py).
 """
+import argparse, json, os, re, sys, tempfile, time, urllib.error, urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
 
-PROFILE_ID = "baseline-v2"
-
-# Vanilla Kunos tracks (the whole track folder, AI lines included, is hash-checked by ac_track_check.py)
-TRACKS = ["magione", "ks_vallelunga/club_circuit"]
-TIMED_LAPS = 3                 # laps that count: a car is scored by the MEDIAN of these (use 3 to 5)
-LAPS = TIMED_LAPS + 1          # laps that are recorded per car = lap 1 (standing start, always dropped) + the timed laps
-RACE_LENGTH_LAPS = 99          # the race itself is made so long that it never finishes: lapped or slow cars can then
-                               # always complete LAPS laps, AC never reaches the results screen, and the runner closes AC
-                               # itself once every car has its laps. Only the first LAPS laps of each car are scored.
-
-AI_LEVEL = "100"
-AI_AGGRESSION = "0"
-
-# Written into every AI car section (these also wipe anything a template might carry: ballast,
-# restrictors, setups, layouts).
-AI_CAR = {
-    "AI_LEVEL": AI_LEVEL,
-    "AI_AGGRESSION": AI_AGGRESSION,
-    "BALLAST": "0",
-    "RESTRICTOR": "0",
-    "SETUP": "",
-    "MODEL_CONFIG": "",
-}
-
-# Race conditions, overwritten in every generated race.ini
-CONDITIONS = {
-    "DYNAMIC_TRACK": {"SESSION_START": "100", "RANDOMNESS": "0", "LAP_GAIN": "0", "SESSION_TRANSFER": "0"},
-    "WEATHER": {"NAME": "3_clear"},                                  # vanilla clear weather
-    "TEMPERATURE": {"AMBIENT": "22", "ROAD": "28"},
-    "LIGHTING": {"SUN_ANGLE": "-16", "TIME_MULT": "1"},               # 12:00, time not accelerated
-    "WIND": {"SPEED_KMH_MIN": "0", "SPEED_KMH_MAX": "0", "DIRECTION_DEG": "0"},
-}
-
-# Only applied if the template has an [ASSISTS] section (keeps wear / fuel / damage out of the picture)
-ASSISTS = {"DAMAGE": "0", "FUEL_RATE": "0", "TYRE_WEAR": "0"}
+HERE = Path(__file__).resolve().parent
+CACHE = HERE / "conditions_cache.json"
+CLOUD_CFG = HERE / "cloud_config.json"
+MAX_AGE_S = 12 * 3600
+ALLOW_STALE = False  # the GUI sets this in its own process only, to DISPLAY the last known conditions while offline
 
 
-def describe():
-    c = CONDITIONS
-    return (f"{PROFILE_ID}: tracks {', '.join(TRACKS)} | {LAPS} laps (lap 1 dropped, median of {TIMED_LAPS}) | AI level {AI_LEVEL}, aggression {AI_AGGRESSION} | "
-            f"{c['WEATHER']['NAME']}, air {c['TEMPERATURE']['AMBIENT']}C / road {c['TEMPERATURE']['ROAD']}C, "
-            f"grip {c['DYNAMIC_TRACK']['SESSION_START']}% constant, no wind, 12:00")
+class ConditionsUnavailable(RuntimeError):
+    """The server's benchmark conditions cannot be used (not downloaded, too old, invalid, unreachable)."""
+
+
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
+
+
+def _int(d, key, lo, hi):
+    v = d.get(key)
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise ConditionsUnavailable(f"The server's conditions have a missing or invalid '{key}'.")
+    return v
+
+
+def validate(data):
+    """Check a /v1/conditions answer; -> clean dict. Anything unexpected raises ConditionsUnavailable."""
+    if not isinstance(data, dict):
+        raise ConditionsUnavailable("The server's conditions are not a JSON object.")
+    if data.get("format") != 1:
+        raise ConditionsUnavailable(f"The server's conditions use format {data.get('format')!r}; this app understands "
+                                    "format 1. Update the app.")
+    profile = data.get("profile")
+    if not isinstance(profile, str) or not _NAME.match(profile):
+        raise ConditionsUnavailable("The server's conditions have an invalid profile name.")
+    tracks = data.get("tracks")
+    if not isinstance(tracks, list) or not 1 <= len(tracks) <= 6:
+        raise ConditionsUnavailable("The server's conditions have no valid track list.")
+    for t in tracks:
+        parts = t.split("/") if isinstance(t, str) else []
+        if not 1 <= len(parts) <= 2 or not all(_NAME.match(p) for p in parts):
+            raise ConditionsUnavailable(f"The server sent an unsafe track name: {t!r}")
+    laps, timed = _int(data, "laps", 2, 50), _int(data, "timed_laps", 1, 49)
+    if laps != timed + 1:
+        raise ConditionsUnavailable("The server's lap counts do not fit the scoring (laps must be timed_laps + 1: "
+                                    "lap 1 is the standing start and is dropped).")
+    max_batch, max_entries = _int(data, "max_batch", 1, 64), _int(data, "max_entries", 1, 1_000_000)
+    env = data.get("env")
+    if (not isinstance(env, dict) or not isinstance(env.get("tracks"), dict) or not env["tracks"]
+            or not isinstance(env.get("acs"), str) or not env["acs"]):
+        raise ConditionsUnavailable("The server has no canonical environment yet (the operator must run set-env).")
+    for t in tracks:
+        if not isinstance(env["tracks"].get(t.partition("/")[0]), str):
+            raise ConditionsUnavailable(f"The server's environment has no digest for track {t.partition('/')[0]}.")
+    extra = data.get("conditions", {})
+    if not isinstance(extra, dict):
+        raise ConditionsUnavailable("The server's 'conditions' field is not an object.")
+    accepting = data.get("accepting_submissions")
+    if not isinstance(accepting, bool):
+        raise ConditionsUnavailable("The server's conditions have no valid 'accepting_submissions'.")
+    version = data.get("version")
+    if not isinstance(version, str) or not version:
+        raise ConditionsUnavailable("The server's conditions have no version.")
+    return {"profile": profile, "tracks": list(tracks), "laps": laps, "timed_laps": timed, "max_batch": max_batch,
+            "max_entries": max_entries, "env": env, "conditions": extra, "accepting_submissions": accepting,
+            "version": version}
+
+
+# ---------------------------------------------------------------- server address / cache files
+def _read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_json(path, data):
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def server_url():
+    cfg = _read_json(CLOUD_CFG) or {}
+    s = cfg.get("server")
+    return s.rstrip("/") if isinstance(s, str) and s.strip() else None
+
+
+def set_server(url):
+    url = url.strip().rstrip("/")
+    u = urlparse(url)
+    if u.scheme not in ("http", "https") or not u.netloc:
+        raise ConditionsUnavailable("The server address must start with https:// (or http:// for local tests).")
+    if u.scheme == "http" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
+        print("WARNING: plain http is unencrypted. Use https.")
+    cfg = _read_json(CLOUD_CFG) or {}
+    if cfg.get("server") != url:
+        cfg["server"] = url
+        _write_json(CLOUD_CFG, cfg)
+
+
+def _read_cache():
+    c = _read_json(CACHE)
+    return c if isinstance(c, dict) else None
+
+
+# ---------------------------------------------------------------- fetch / load
+def fetch(server=None, say=print):
+    """GET /v1/conditions (If-None-Match with the last ETag) -> (clean conditions, 'updated' | 'unchanged')."""
+    if server:
+        set_server(server)
+    url = server_url()
+    if not url:
+        raise ConditionsUnavailable("No server address set. Fill it in on the Server tab: the benchmark conditions "
+                                    "come from the server.")
+    cached = _read_cache()
+    etag = cached.get("etag") if cached and cached.get("server") == url and cached.get("data") else None
+    headers = {"Accept": "application/json", "User-Agent": "ac_bench-conditions/1"}
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(url + "/v1/conditions", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            code, raw, new_etag = r.status, r.read(), r.headers.get("ETag")
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and etag:
+            code, raw, new_etag = 304, b"", etag
+        else:
+            raise ConditionsUnavailable(f"The server answered {e.code} for /v1/conditions: cannot continue.")
+    except urllib.error.URLError as e:
+        raise ConditionsUnavailable(f"Could not reach the server: {e.reason}")
+    except OSError as e:
+        raise ConditionsUnavailable(f"Could not reach the server: {e}")
+    if code == 304:
+        clean = validate(cached["data"])
+        cached["fetched_at"] = time.time()
+        _write_json(CACHE, cached)
+        return clean, "unchanged"
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise ConditionsUnavailable("The server's conditions are not valid JSON.")
+    clean = validate(data)
+    _write_json(CACHE, {"server": url, "etag": new_etag, "fetched_at": time.time(), "data": data})
+    return clean, "updated"
+
+
+def load():
+    """Last fetched conditions (clean dict). Refuses a missing, foreign or too-old cache; never invents values."""
+    c = _read_cache()
+    if not c or not c.get("data"):
+        raise ConditionsUnavailable("The benchmark conditions have not been downloaded from the server yet. "
+                                    "Press Refresh on the Benchmark tab (or run: ac_conditions.py fetch).")
+    if c.get("server") != server_url():
+        raise ConditionsUnavailable("The stored benchmark conditions came from a different server. Fetch them again.")
+    age = time.time() - float(c.get("fetched_at") or 0)
+    if not ALLOW_STALE and not -300 <= age <= MAX_AGE_S:
+        raise ConditionsUnavailable("The stored benchmark conditions are older than 12 hours. Fetch them again "
+                                    "(the app does this before every benchmark, check and upload).")
+    return validate(c["data"])
+
+
+def load_any():
+    """Like load(), but None instead of an error (for display)."""
+    try:
+        return load()
+    except ConditionsUnavailable:
+        return None
+
+
+def fetched_at():
+    c = _read_cache()
+    return float(c["fetched_at"]) if c and c.get("fetched_at") else None
+
+
+def summary(d):
+    return (f"profile {d['profile']} | tracks {', '.join(d['tracks'])} | {d['laps']} laps "
+            f"(lap 1 dropped, median of {d['timed_laps']}) | up to {d['max_batch']} cars per pack | "
+            f"server version {d['version']} | submissions {'open' if d['accepting_submissions'] else 'CLOSED'}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Benchmark conditions from the server")
+    sub = ap.add_subparsers(dest="command", required=True)
+    f = sub.add_parser("fetch")
+    f.add_argument("--server")
+    sub.add_parser("show")
+    a = ap.parse_args()
+    try:
+        if a.command == "fetch":
+            d, how = fetch(a.server)
+            print(("Benchmark conditions unchanged: " if how == "unchanged" else "Benchmark conditions updated: ") + summary(d))
+        else:
+            d = load()
+            print(summary(d))
+    except ConditionsUnavailable as e:
+        sys.exit(str(e))
+
+
+if __name__ == "__main__":
+    main()

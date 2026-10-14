@@ -1,36 +1,29 @@
 #!/usr/bin/env python3
 """
-Vanilla track check. Makes sure the tracks used for benchmarking are identical to a
-reference, so lap-time ratings made on different AC installations stay comparable.
+Vanilla track check. Makes sure the tracks used for benchmarking are identical to the environment the SERVER
+publishes, so lap-time ratings made on different AC installations stay comparable.
 
 How it works
-  * "create" hashes EVERY file in content/tracks/<track>/ (all layouts) and saves the file
-    list + SHA-256 hashes to track_reference.json. Do this once on a clean install:
-    first run Steam > Assetto Corsa > Properties > Installed Files > Verify integrity,
-    which restores changed or deleted Kunos files. (Steam does NOT remove extra files; this
-    tool reports those.)
-  * "verify" hashes the current install again and reports files that are modified,
-    missing or extra compared with the reference. Exit code 0 = identical.
-  * The reference is only as trustworthy as the install it was made from. Copy the same
-    track_reference.json to every PC you benchmark on.
+  * The server's canonical environment (GET /v1/conditions -> env) holds one digest per benchmark track folder and the
+    SHA-256 of acs.exe. There is no local reference file any more and nothing to create on this PC.
+  * "verify" hashes EVERY file in content/tracks/<track>/ (all layouts, AI racing lines included), reduces them to the
+    same digest the server uses, and compares. It also hashes acs.exe (the AI driving code). Exit code 0 = identical.
+  * The server only keeps fingerprints, so a mismatch cannot list the files that differ. To get back to vanilla run
+    Steam > Assetto Corsa > Properties > Installed Files > Verify integrity (it restores changed or deleted Kunos
+    files; it does NOT remove extra files you added to the track folders, remove those yourself).
+  * The digest is tried over the whole folder first and, only if that does not match for every track, over the folder
+    without its ui/ subfolder, so it follows however the server's environment was made. This is automatic, not a setting.
 
-The AI is covered in two places: the track folder holds the AI racing lines (ai/*.ai, hashed
-like every other file) and acs.exe holds the AI driving code (its hash is stored and compared).
-Race conditions are NOT checked here: the runner pins them in ac_baseline.py.
+Warnings only (never block): CSP track config files in extension/config/tracks/ for these tracks.
 
-Warnings only (never block): CSP track config files in extension/config/tracks/ for these
-tracks.
-
-  python ac_track_check.py create --ac-dir "<AC>" --tracks magione ks_vallelunga/club_circuit --template template_race.ini
-  python ac_track_check.py verify --ac-dir "<AC>" --tracks magione ks_vallelunga/club_circuit
-Exit codes (verify): 0 identical, 2 different, 3 no reference for the track(s).
+  python ac_track_check.py verify --ac-dir "<AC>"
+Exit codes: 0 identical, 2 different, 3 cannot check (no usable conditions from the server).
 """
 import argparse, configparser, hashlib, json, os, sys, time
 from pathlib import Path
 
-from ac_baseline import PROFILE_ID
+import ac_conditions
 
-DEFAULT_REF = Path(__file__).resolve().with_name("track_reference.json")
 JUNK = {"thumbs.db", "desktop.ini", ".ds_store"}          # OS clutter, never part of the game
 COND_SECTIONS = ("DYNAMIC_TRACK", "WEATHER", "TEMPERATURE", "LIGHTING")
 
@@ -75,6 +68,7 @@ def csp_files(ac, track):
 
 
 def conditions(template):
+    """Race sections of a race.ini (kept for older callers; the server's conditions are what counts now)."""
     cp = configparser.ConfigParser(strict=False, interpolation=None, delimiters=("=",))
     cp.optionxform = str
     with open(template, encoding="utf-8", errors="ignore") as f:
@@ -102,108 +96,101 @@ def digest(files):
     return h.hexdigest()
 
 
-def load_ref(path):
+def create(*_args, **_kwargs):
+    """Local reference files are gone: the server publishes the environment."""
+    print("Reference files are no longer used: the environment comes from the server (GET /v1/conditions).")
+    return 1
+
+
+def verify(ac, specs=None, ref_path=None, template=None, ignore_ui=False, say=print):
+    """Check this install against the environment the server publishes.
+    -> {"status": ok | modified | noref, "tracks": {t: {"files": n, "digest": ...}}, "warnings": [...], ...}
+    ref_path, template and ignore_ui are accepted for older callers and ignored: nothing here is chosen locally.
+    Every track of the server's baseline is checked, whatever `specs` lists."""
+    result = {"status": "ok", "tracks": {}, "warnings": [], "ignore_ui": False}
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def create(ac, specs, ref_path, template=None, say=print):
-    ref = load_ref(ref_path) or {"format": 1, "tracks": {}, "csp": {}, "conditions": None}
-    for t in track_ids(specs):
-        tdir = Path(ac) / "content" / "tracks" / t
-        if not tdir.is_dir():
-            say(f"{t}: folder not found: {tdir}")
-            return 1
-        say(f"{t}: hashing every file ...")
-        files = hash_tree(tdir)
-        ref["tracks"][t] = {"files": files}
-        ref["csp"][t] = csp_files(ac, t)
-        say(f"{t}: {len(files)} files, {sum(v[0] for v in files.values()) / 1e6:.0f} MB, digest {digest(files)[:12]}")
-    exe = Path(ac) / "acs.exe"
-    if exe.exists():
-        ref["game"] = {"acs.exe": file_info(exe)}
-        say("acs.exe: fingerprint stored (the AI driving code lives in the game executable)")
-    if template:
-        ref["conditions"] = conditions(template)
-    ref["created"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    Path(ref_path).write_text(json.dumps(ref, indent=1), encoding="utf-8")
-    say(f"Reference saved to {ref_path}")
-    return 0
-
-
-def verify(ac, specs, ref_path, template=None, ignore_ui=False, say=print):
-    """-> {"status": ok | modified | noref, "tracks": {t: {"files": n, "digest": ...}}, "warnings": [...]}"""
-    ref = load_ref(ref_path)
-    result = {"status": "ok", "tracks": {}, "warnings": [], "ignore_ui": ignore_ui}
-    if not ref:
-        say(f"No reference file at {ref_path}. Create one on a clean install first.")
+        cond = ac_conditions.load()
+    except ac_conditions.ConditionsUnavailable as e:
+        say(str(e))
         result["status"] = "noref"
         return result
-    for t in track_ids(specs):
-        if t not in ref.get("tracks", {}):
-            say(f"{t}: NOT IN THE REFERENCE. Create the reference including this track.")
-            if result["status"] == "ok":
-                result["status"] = "noref"
-            continue
+    want = cond["env"]["tracks"]
+    ids = track_ids(cond["tracks"])
+    for t in track_ids(specs or []):
+        if t not in ids:
+            say(f"{t}: not part of the server's baseline ({', '.join(ids)}): refusing to check it.")
+            result["status"] = "noref"
+    if result["status"] != "ok":
+        return result
+
+    local = {}   # track id -> {"full": (files, digest), "noui": (files, digest), "ai": n}
+    for t in ids:
         tdir = Path(ac) / "content" / "tracks" / t
         if not tdir.is_dir():
             say(f"{t}: MISSING: folder not found: {tdir}")
             result["status"] = "modified"
             continue
         say(f"{t}: hashing every file ...")
-        cur = keep(hash_tree(tdir), ignore_ui)
-        want = keep(ref["tracks"][t]["files"], ignore_ui)
-        modified, missing, extra = diff(want, cur)
-        result["tracks"][t] = {"files": len(cur), "digest": digest(cur)}
-        if modified or missing or extra:
+        files = hash_tree(tdir)
+        noui = keep(files, True)
+        local[t] = {"full": (len(files), digest(files)), "noui": (len(noui), digest(noui)),
+                    "ai": sum(1 for p in files if p.lower().endswith(".ai"))}
+
+    mode = None                       # None = whole folder, True = without ui/
+    if len(local) == len(ids):
+        for ui_mode in (False, True):
+            key = "noui" if ui_mode else "full"
+            if all(local[t][key][1] == want[t] for t in ids):
+                mode = ui_mode
+                break
+    key = "noui" if mode else "full"
+    result["ignore_ui"] = bool(mode)
+    if (mode is None and len(local) == len(ids)
+            and all(want[t] in (local[t]["full"][1], local[t]["noui"][1]) for t in ids)):
+        result["status"] = "modified"
+        say("The tracks match the server's environment, but not all in the same way (some only without their ui/ "
+            "folder): treating the install as not vanilla.")
+    for t in ids:
+        if t not in local:
+            continue
+        n, dg = local[t][key]
+        result["tracks"][t] = {"files": n, "digest": dg}
+        if mode is None:   # no consistent match: judge each track on its own so only the bad one is flagged
+            ok_t = want[t] in (local[t]["full"][1], local[t]["noui"][1])
+        else:
+            ok_t = dg == want[t]
+        if ok_t:
+            say(f"{t}: OK, {n} files identical to the server's environment (digest {dg[:12]})")
+            if local[t]["ai"]:
+                say(f"{t}: AI lines present ({local[t]['ai']} files, covered by the digest)")
+            else:
+                result["warnings"].append(f"{t}: no .ai line files found in the track, the AI may not drive it properly")
+        else:
             result["status"] = "modified"
-            say(f"{t}: NOT VANILLA: {len(modified)} changed, {len(missing)} missing, {len(extra)} extra")
-            for label, items in (("changed", modified), ("missing", missing), ("extra", extra)):
-                for p in items[:10]:
-                    say(f"    {label}: {p}")
-                if len(items) > 10:
-                    say(f"    ... and {len(items) - 10} more {label}")
-        else:
-            say(f"{t}: OK, {len(cur)} files identical to the reference (digest {result['tracks'][t]['digest'][:12]})")
-        ai_names = sorted({Path(p).name for p in cur if p.lower().endswith(".ai")})
-        ai_bad = [p for p in modified + missing + extra if p.lower().endswith(".ai")]
-        if ai_bad:
-            bad_list = ", ".join(ai_bad)
-            say(f"{t}: AI LINE FILES NOT VANILLA: {bad_list}")
-        elif ai_names:
-            n_ai = sum(1 for p in cur if p.lower().endswith(".ai"))
-            name_list = ", ".join(ai_names)
-            say(f"{t}: AI lines vanilla ({n_ai} files: {name_list})")
-        else:
-            result["warnings"].append(f"{t}: no .ai line files found in the track, the AI may not drive it properly")
-        m, x, e = diff(ref.get("csp", {}).get(t, {}), csp_files(ac, t))
-        if m or x or e:
-            result["warnings"].append(f"{t}: CSP track config files differ from the reference "
-                                      f"({len(m)} changed, {len(x)} missing, {len(e)} extra)")
-    game = ref.get("game")
+            say(f"{t}: NOT VANILLA: this install's digest {dg[:12]} differs from the server's {want[t][:12]}. "
+                "The server only keeps a fingerprint, so the changed files cannot be listed: run Steam's "
+                "'Verify integrity of game files' and remove any extra files you added to this track folder.")
+        csp = csp_files(ac, t)
+        if csp:
+            result["warnings"].append(f"{t}: CSP track config files exist ({len(csp)}); they can change how the track or "
+                                      "the AI behaves")
+    if mode:
+        result["warnings"].append("the track digests match the server's environment only without the ui/ folders "
+                                  "(the server's environment ignores them)")
+
     exe = Path(ac) / "acs.exe"
     if exe.exists():
-        result["game"] = {"acs.exe": file_info(exe)[1]}
-    if game is None:
-        result["warnings"].append("reference has no acs.exe fingerprint (made by an older version): re-create it")
-    elif not exe.exists():
+        sha = file_info(exe)[1]
+        result["game"] = {"acs.exe": sha}
+        if sha == cond["env"]["acs"]:
+            say("acs.exe: OK, same game version as the server's environment (AI driving code)")
+        else:
+            say("acs.exe: DIFFERENT from the server's environment (other game version or patched). The AI is part of this "
+                "file, so its behaviour may differ: ratings would not be comparable.")
+            result["status"] = "modified"
+    else:
         say("acs.exe: MISSING")
         result["status"] = "modified"
-    elif file_info(exe) != game["acs.exe"]:
-        say("acs.exe: DIFFERENT from the reference (other game version or patched). The AI is part of this file,\n"
-            "    so its behaviour may differ: ratings would not be comparable.")
-        result["status"] = "modified"
-    else:
-        say("acs.exe: OK, same game version as the reference (AI driving code)")
-    if template and ref.get("conditions") is not None:
-        cur_c, ref_c = conditions(template), ref["conditions"]
-        for sec in sorted(set(cur_c) | set(ref_c)):
-            for k in sorted(set(cur_c.get(sec, {})) | set(ref_c.get(sec, {}))):
-                a, b = ref_c.get(sec, {}).get(k), cur_c.get(sec, {}).get(k)
-                if a != b:
-                    result["warnings"].append(f"race conditions differ: [{sec}] {k}: reference {a!r}, template {b!r}")
     for w in result["warnings"]:
         say("WARNING: " + w)
     return result
@@ -232,20 +219,21 @@ def append_log(path, result, env_id=None, env=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Vanilla track check")
-    ap.add_argument("action", choices=["create", "verify"])
+    ap = argparse.ArgumentParser(description="Vanilla track check against the server's environment")
+    ap.add_argument("action", choices=["verify"])
     ap.add_argument("--ac-dir", required=True)
-    ap.add_argument("--reference", default=str(DEFAULT_REF))
-    ap.add_argument("--template", help="template race.ini (race conditions are stored / compared as warnings)")
-    ap.add_argument("--ignore-ui-files", action="store_true", help="verify: ignore each track's ui/ folder")
     ap.add_argument("--log", default=str(Path(__file__).resolve().with_name("track_check_log.json")),
-                    help="verify: append the result (with the environment id) to this log")
-    ap.add_argument("--tracks", nargs="+", required=True, help="track[/layout] (the whole track folder is used)")
+                    help="append the result (with the environment id) to this log")
+    # accepted and ignored, so old command lines keep working; nothing about the baseline is chosen here
+    ap.add_argument("--reference", help=argparse.SUPPRESS)
+    ap.add_argument("--template", help=argparse.SUPPRESS)
+    ap.add_argument("--ignore-ui-files", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--tracks", nargs="*", help=argparse.SUPPRESS)
     args = ap.parse_args()
-    if args.action == "create":
-        return create(args.ac_dir, args.tracks, args.reference, args.template)
-    res = verify(args.ac_dir, args.tracks, args.reference, args.template, args.ignore_ui_files)
-    env_id, env = make_env(res, PROFILE_ID) if res["status"] == "ok" else (None, None)
+    res = verify(args.ac_dir, args.tracks)
+    env_id = env = None
+    if res["status"] == "ok":
+        env_id, env = make_env(res, ac_conditions.load()["profile"])
     append_log(args.log, res, env_id, env)
     return {"ok": 0, "modified": 2, "noref": 3}[res["status"]]
 

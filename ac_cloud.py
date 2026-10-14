@@ -16,6 +16,8 @@ sync   : downloads the classes and matches every car in your library by that has
          writer can use it) and cloud_missing.txt (cars the cloud has no usable class for yet:
          benchmark those and upload).
 The server address and your API key are kept in cloud_config.json next to this file.
+The benchmark conditions (profile, tracks, laps, canonical environment) are fetched from the server (ac_conditions.py)
+before an upload; nothing about them is set in this app.
 """
 import argparse, csv, json, sys, urllib.error, urllib.request
 from pathlib import Path
@@ -24,9 +26,8 @@ from urllib.parse import urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from ac_car_classifier import read_ui, num, class_sort_key   # noqa: E402
-import ac_baseline as bl      # noqa: E402
 import ac_carid               # noqa: E402
-import ac_rating              # noqa: E402
+import ac_conditions          # noqa: E402  (profile, tracks, laps, environment: all come from the server)
 
 CFG_FILE = HERE / "cloud_config.json"
 UPLOADED = HERE / "cloud_uploaded.json"
@@ -52,7 +53,7 @@ def settings(args):
     if getattr(args, "server", None):
         cfg["server"] = args.server.rstrip("/")
     if not cfg.get("server"):
-        raise SystemExit("No server set. Pass --server URL (or fill it in on the GUI's Cloud tab).")
+        raise SystemExit("No server set. Pass --server URL (or fill it in on the GUI's Server tab).")
     u = urlparse(cfg["server"])
     if u.scheme not in ("http", "https") or not u.netloc:
         raise SystemExit("The server address must start with https:// (or http:// for local tests).")
@@ -95,20 +96,12 @@ def cmd_ping(args):
     code, h, _ = call(cfg, "GET", "/v1/health")
     if code != 200:
         raise SystemExit("Server answered %s" % code)
-    code, c, _ = call(cfg, "GET", "/v1/config")
-    print("Server OK. Accepts baseline %s, tracks %s, batch <= %s, class table v%s." %
-          (c["profile"], ", ".join(c["tracks"]), c["max_batch"], c["class_table_version"]))
-    problems = []
-    if c["profile"] != bl.PROFILE_ID:
-        problems.append("your app uses baseline %s, the server wants %s: update the app" % (bl.PROFILE_ID, c["profile"]))
-    if c["tracks"] != bl.TRACKS:
-        problems.append("track list differs from your app's fixed tracks")
-    if not c.get("env"):
-        problems.append("the server has no canonical environment yet (the operator must run set-env)")
-    for p in problems:
-        print("PROBLEM:", p)
-    print("Registered: %s" % ("yes" if cfg.get("api_key") else "no"))
     save_json(CFG_FILE, cfg)
+    c, how = ac_conditions.fetch(cfg["server"])
+    print("Server OK. Benchmark conditions %s: %s" % (how, ac_conditions.summary(c)))
+    if not c["accepting_submissions"]:
+        print("PROBLEM: the server is not accepting submissions right now")
+    print("Registered: %s" % ("yes" if cfg.get("api_key") else "no"))
 
 
 def cmd_register(args):
@@ -213,11 +206,11 @@ def build_entries(results, env_log, cars_dir, server_cfg, attest_legacy=False):
 
 def cmd_upload(args):
     cfg = settings(args)
-    code, sc, _ = call(cfg, "GET", "/v1/config")
-    if code != 200:
-        raise SystemExit("Could not read the server configuration")
-    if sc["profile"] != bl.PROFILE_ID:
-        raise SystemExit("Your app's baseline (%s) is not the one the server accepts (%s)." % (bl.PROFILE_ID, sc["profile"]))
+    cond, _ = ac_conditions.fetch(cfg["server"])          # If-None-Match: always asks the server first
+    if not cond["accepting_submissions"]:
+        raise SystemExit("The server is not accepting submissions right now.")
+    sc = {"profile": cond["profile"], "tracks": cond["tracks"], "laps": cond["laps"], "max_batch": cond["max_batch"]}
+    import ac_rating                                         # after the fetch: it may read the baseline on import
     results = load_json(args.results, {})
     env_log = load_json(args.log, [])
     entries, envs, skipped = build_entries(results, env_log, args.cars_dir, sc, getattr(args, "attest_legacy", False))
@@ -233,9 +226,10 @@ def cmd_upload(args):
         print("Nothing new to upload.")
         return
     accepted, reasons, status = 0, {}, {}
-    for i in range(0, len(entries), CHUNK):
-        chunk = entries[i:i + CHUNK]
-        body = {"client": {"app": "ac_bench", "version": 1}, "profile": bl.PROFILE_ID,
+    step = max(1, min(CHUNK, cond["max_entries"]))
+    for i in range(0, len(entries), step):
+        chunk = entries[i:i + step]
+        body = {"client": {"app": "ac_bench", "version": 1}, "profile": sc["profile"],
                 "environments": {k: envs[k] for k in {e["env"] for e in chunk}}, "results": chunk}
         code, r, _ = call(cfg, "POST", "/v1/submit", body, auth=True)
         if code != 200:
@@ -336,7 +330,10 @@ def main():
     s.add_argument("--include-provisional", action="store_true",
                    help="also use classes backed by a single submission (less reliable)")
     args = ap.parse_args()
-    {"ping": cmd_ping, "register": cmd_register, "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
+    try:
+        {"ping": cmd_ping, "register": cmd_register, "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
+    except ac_conditions.ConditionsUnavailable as e:
+        raise SystemExit(str(e))
 
 
 if __name__ == "__main__":
