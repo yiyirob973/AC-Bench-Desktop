@@ -189,6 +189,14 @@ def verify_cmd(c):
     return ["ac_track_check.py", "verify", "--ac-dir", c["ac_dir"]]
 
 
+def create_ref_cmd(c, out=""):
+    """Operator: build the canonical track reference from this install (the track list comes from the server)."""
+    cmd = ["ac_track_check.py", "create", "--ac-dir", c["ac_dir"]]
+    if out:
+        cmd += ["--out", out]
+    return cmd
+
+
 def probe_cmd(c, ids=None):
     ids = list(ids) if ids is not None else c["probe_ids"].split()
     return bench_cmd(c, ["--probe", *ids])
@@ -689,6 +697,21 @@ def main():
         if need("ac_dir"):
             run_with_conditions(lambda: verify_cmd(cfg()))
 
+    def do_create_ref():
+        c = need("ac_dir", "cloud_url")
+        if not c:
+            return
+        if not messagebox.askyesno("Create track reference",
+                                   "This turns THIS Assetto Corsa install into the canonical reference for the server: "
+                                   "every benchmark track folder and acs.exe are fingerprinted.\n\n"
+                                   "Only do this on a clean install (Steam > Verify integrity of game files, no extra "
+                                   "files in the track folders, no CSP track configs).\n\nContinue?"):
+            return
+        out = filedialog.asksaveasfilename(title="Save the track reference", defaultextension=".json",
+                                           initialfile="track_reference.json", filetypes=[("JSON", "*.json")])
+        if out:
+            run(create_ref_cmd(c, out))   # reads only the track list from the server; needs no environment
+
     def do_steam():
         try:
             os.startfile("steam://validate/244210")
@@ -699,18 +722,26 @@ def main():
     vf = ttk.Frame(tv)
     vf.pack(fill="x")
     pbtn(vf, "Verify tracks now", do_verify, accent=True)
-    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left")
+    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left", padx=(0, 6))
+    ttk.Button(vf, text="Create track reference (server operator)", command=do_create_ref).pack(side="left")
     ttk.Label(tv, justify="left", style="Muted.TLabel", text=(
         "Compares every file of the benchmark tracks (including the AI racing lines) and acs.exe (the AI driving\n"
         "code) with the environment the server publishes. Benchmarks run this check first and stop on any\n"
         "difference. The server only keeps fingerprints, so a mismatch cannot list the files: use Steam's\n"
         "'Verify integrity of game files' and remove any extra files you added to the track folders.\n"
-        "The tracks, laps and race settings are set by the server and cannot be changed here.")
+        "The tracks, laps and race settings are set by the server and cannot be changed here.\n"
+        "Server operators: 'Create track reference' fingerprints this (clean) install into a file; load it on the\n"
+        "server with: python server.py set-env --from <file>.")
               ).pack(anchor="w", pady=10)
 
     def vstatus_hook():
         cmd = state.get("last_cmd") or []
-        if len(cmd) > 1 and cmd[0] == "ac_track_check.py":
+        if len(cmd) > 1 and cmd[0] == "ac_track_check.py" and cmd[1] == "create":
+            rc = state.get("last_rc")
+            vstat.set({0: "Track reference created (see log for the file and the set-env command)",
+                       2: "Reference NOT created: install incomplete (see log)",
+                       3: "Cannot create: no track list from the server"}.get(rc, f"Create failed (exit {rc})"))
+        elif len(cmd) > 1 and cmd[0] == "ac_track_check.py":
             rc = state.get("last_rc")
             vstat.set({0: "Tracks are vanilla: identical to the server's environment",
                        2: "NOT VANILLA: differs from the server's environment (see log)",
