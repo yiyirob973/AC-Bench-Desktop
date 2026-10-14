@@ -83,3 +83,15 @@ AC-Bench-Desktop/
 ## Summary
 
 AC Bench Desktop is a simple, repeatable benchmarking tool for rating Assetto Corsa car mods. It uses a fixed baseline, Kunos-only tracks, and standard AI settings to produce fair, comparable car ratings that you can share with the community via the AC Bench server.
+
+
+## Creating the track reference (server operator)
+
+The server's canonical environment (digests of every benchmark track folder plus the SHA-256 of `acs.exe`) is made
+from a clean install: Steam > Verify integrity of game files, no extra files in the track folders.
+
+- GUI: tab **Vanilla check** > **Create track reference (server operator)**, or
+- CLI: `python ac_track_check.py create --ac-dir "<AC>" --out track_reference.json`
+
+The track list and profile come from the server's `/v1/conditions` (no environment needed yet). Load the file on the
+server with `python server.py set-env --from track_reference.json`; players then verify against it.
