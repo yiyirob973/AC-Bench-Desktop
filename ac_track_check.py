@@ -5,7 +5,7 @@ publishes, so lap-time ratings made on different AC installations stay comparabl
 
 How it works
   * The server's canonical environment (GET /v1/conditions -> env) holds one digest per benchmark track folder and the
-    SHA-256 of acs.exe. There is no local reference file any more and nothing to create on this PC.
+    SHA-256 of acs.exe. Players have no local reference file; only the server operator creates one ("create", see below).
   * "verify" hashes EVERY file in content/tracks/<track>/ (all layouts, AI racing lines included), reduces them to the
     same digest the server uses, and compares. It also hashes acs.exe (the AI driving code). Exit code 0 = identical.
   * The server only keeps fingerprints, so a mismatch cannot list the files that differ. To get back to vanilla run
@@ -17,7 +17,8 @@ How it works
 Warnings only (never block): CSP track config files in extension/config/tracks/ for these tracks.
 
   python ac_track_check.py verify --ac-dir "<AC>"
-Exit codes: 0 identical, 2 different, 3 cannot check (no usable conditions from the server).
+  python ac_track_check.py create --ac-dir "<AC>" [--out track_reference.json]   (operator: make the reference)
+Exit codes: 0 identical / reference written, 2 different or incomplete install, 3 cannot (no usable data from the server).
 """
 import argparse, configparser, hashlib, json, os, sys, time
 from pathlib import Path
@@ -96,10 +97,56 @@ def digest(files):
     return h.hexdigest()
 
 
-def create(*_args, **_kwargs):
-    """Local reference files are gone: the server publishes the environment."""
-    print("Reference files are no longer used: the environment comes from the server (GET /v1/conditions).")
-    return 1
+REFERENCE_FILE = Path(__file__).resolve().with_name("track_reference.json")
+
+
+def create(ac, out=None, say=print, server=None):
+    """OPERATOR ACTION: build the canonical track reference (the environment) from THIS install.
+    Which tracks to hash comes from the server (its published track list, no environment needed yet); the digests
+    are over the whole track folders, exactly as verify() computes them, plus the SHA-256 of acs.exe.
+    Writes `out` (default track_reference.json) as {"format": 1, "env": {profile, tracks, acs, ignore_ui}, ...},
+    which the server loads with:  python server.py set-env --from track_reference.json
+    The install must be vanilla (Steam > Verify integrity first, and remove extra files from the track folders).
+    -> {"status": ok | modified | noref, "path": ..., "env": ...}"""
+    out = Path(out) if out else REFERENCE_FILE
+    result = {"status": "ok", "path": None, "env": None}
+    try:
+        profile, specs = ac_conditions.fetch_baseline_tracks(server)
+    except ac_conditions.ConditionsUnavailable as e:
+        say(str(e))
+        result["status"] = "noref"
+        return result
+    ids = track_ids(specs)
+    exe = Path(ac) / "acs.exe"
+    if not exe.exists():
+        say(f"acs.exe not found in {ac}")
+        result["status"] = "modified"
+        return result
+    digests = {}
+    for t in ids:
+        tdir = Path(ac) / "content" / "tracks" / t
+        if not tdir.is_dir():
+            say(f"{t}: MISSING: folder not found: {tdir}")
+            result["status"] = "modified"
+            continue
+        say(f"{t}: hashing every file ...")
+        files = hash_tree(tdir)
+        digests[t] = digest(files)
+        ai = sum(1 for p in files if p.lower().endswith(".ai"))
+        say(f"{t}: {len(files)} files, digest {digests[t][:12]}" + ("" if ai else "  WARNING: no .ai line files found"))
+        if csp_files(ac, t):
+            say(f"{t}: WARNING: CSP track config files exist; the reference should be made from a clean install")
+    if result["status"] != "ok":
+        say("Reference NOT written: fix the missing items above.")
+        return result
+    env = {"profile": profile, "ignore_ui": False, "tracks": digests, "acs": file_info(exe)[1]}
+    doc = {"format": 1, "created": time.strftime("%Y-%m-%d %H:%M:%S"), "env": env}
+    out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    result["path"], result["env"] = str(out), env
+    say(f"Track reference written: {out}")
+    say(f"  profile {profile} | tracks {', '.join(ids)} | acs.exe {env['acs'][:12]}")
+    say(f"Load it on the server with:  python server.py set-env --from {out.name}")
+    return result
 
 
 def verify(ac, specs=None, ref_path=None, template=None, ignore_ui=False, say=print):
@@ -220,16 +267,19 @@ def append_log(path, result, env_id=None, env=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Vanilla track check against the server's environment")
-    ap.add_argument("action", choices=["verify"])
+    ap.add_argument("action", choices=["verify", "create"])
     ap.add_argument("--ac-dir", required=True)
     ap.add_argument("--log", default=str(Path(__file__).resolve().with_name("track_check_log.json")),
                     help="append the result (with the environment id) to this log")
     # accepted and ignored, so old command lines keep working; nothing about the baseline is chosen here
+    ap.add_argument("--out", help="create: where to write the reference (default track_reference.json)")
     ap.add_argument("--reference", help=argparse.SUPPRESS)
     ap.add_argument("--template", help=argparse.SUPPRESS)
     ap.add_argument("--ignore-ui-files", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--tracks", nargs="*", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.action == "create":
+        return {"ok": 0, "modified": 2, "noref": 3}[create(args.ac_dir, args.out)["status"]]
     res = verify(args.ac_dir, args.tracks)
     env_id = env = None
     if res["status"] == "ok":
