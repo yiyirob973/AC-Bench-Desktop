@@ -25,10 +25,10 @@ jobs:
 
     - name: Build Executable with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole ac_bench_gui.py
+        pyinstaller --onefile --noconsole --add-data "apps;apps" --add-data "bundled_car;bundled_car" ac_bench_gui.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: portable-executable
+        name: AC-Bench-Desktop-Executable
         path: dist/*.exe
