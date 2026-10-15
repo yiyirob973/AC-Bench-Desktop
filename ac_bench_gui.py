@@ -33,6 +33,7 @@ HERE = ac_paths.DATA        # everything the app writes and keeps: settings, res
 RES = ac_paths.RES          # everything shipped inside the app: race template, benchmark car, Lua logger
 from ac_car_classifier import class_sort_key  # noqa: E402
 import ac_conditions as cond  # noqa: E402
+import ac_cloud  # noqa: E402  (link codes for signing in on another device)
 import ac_live  # noqa: E402  (live per-car lookups for the Server cars list)
 import ac_track_check  # noqa: E402  (file hashing, used to compare the bundled car with the installed one)
 
@@ -60,7 +61,7 @@ DEFAULTS = {
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
     "auto_drive": False, "click_delay": 25, "press_key": "",
-    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_prov": False, "cloud_attest": True,
+    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
 }
 
 LOCAL_FILTERS = ["All", "Done", "Not done", "Partial", "Failed", "Old settings"]
@@ -200,6 +201,8 @@ def cloud_cmd(c, action):
     if action == "register":
         # --invite=VALUE keeps a code that starts with "-" from being mistaken for an option
         return cmd + ["register", "--invite=" + str(c["cloud_invite"]).strip(), "--name=" + str(c["cloud_name"]).strip()]
+    if action == "login":     # --code=VALUE: a code is never mistaken for an option
+        return cmd + ["login", "--code=" + str(c["cloud_link"]).strip()]
     cmd += [action, "--cars-dir", cars_dir(c)]
     if action == "upload" and c.get("cloud_attest"):
         cmd.append("--attest-legacy")
@@ -846,6 +849,9 @@ def main():
         if action == "register" and not (c["cloud_name"].strip() and c["cloud_invite"].strip()):
             messagebox.showwarning("Server", "Registering needs your name and an invite code.")
             return
+        if action == "login" and not c["cloud_link"].strip():
+            messagebox.showwarning("Server", "Enter the link code created on your other device first.")
+            return
         if action == "upload" and not need("ac_dir"):
             return
         if action == "upload" and c["cloud_attest"]:
@@ -879,6 +885,65 @@ def main():
         "Register once with the invite code you were given. Uploading results is step 3, on the Benchmark tab; the\n"
         "class tags are applied on the Cars & ratings tab.")
               ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+    # ---- the same account on another device
+    dv = group(ts, "Use the same account on another device")
+    entry_row(dv, 0, "Link code (from your other device)", "cloud_link", width=30)
+
+    def show_link_code(code, minutes):
+        win = tk.Toplevel(root)
+        win.title("Link code")
+        win.transient(root)
+        win.resizable(False, False)
+        ttk.Label(win, justify="left", text=("On your other device open the Setup tab, enter this code under\n"
+                                              "'Use the same account on another device' and press Sign in:")
+                  ).pack(padx=16, pady=(16, 8))
+        ent = ttk.Entry(win, justify="center", font=("Consolas", 18), width=16)
+        ent.insert(0, code)
+        ent.configure(state="readonly")
+        ent.pack(padx=16)
+        ttk.Label(win, style="Muted.TLabel", text=f"It works once and for {minutes} minutes.").pack(pady=(8, 0))
+        bb = ttk.Frame(win)
+        bb.pack(pady=14)
+
+        def copy():
+            root.clipboard_clear()
+            root.clipboard_append(code)
+        ttk.Button(bb, text="Copy", command=copy).pack(side="left", padx=4)
+        ttk.Button(bb, text="Close", command=win.destroy).pack(side="left", padx=4)
+
+    def do_link_code():
+        """Signed in here: get a single-use code that signs another device in as the same account."""
+        import argparse
+        c = cfg()
+        if not c["cloud_url"].strip():
+            messagebox.showwarning("Server", "Fill in the server address first.")
+            return
+
+        def work():
+            try:
+                cd = ac_cloud.settings(argparse.Namespace(server=c["cloud_url"].strip()))
+                code, r, _ = ac_cloud.call(cd, "POST", "/v1/devices/link", {}, auth=True)
+                err = None if code == 201 else f"HTTP {code}: {(r or {}).get('error', code)}"
+            except SystemExit as e:
+                r, err = None, str(e)
+
+            def done():
+                if err:
+                    messagebox.showerror("Link code", err)
+                else:
+                    show_link_code(r["code"], r["expires_in"] // 60)
+            root.after(0, done)
+        threading.Thread(target=work, daemon=True).start()
+
+    dvb = ttk.Frame(dv)
+    dvb.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    pbtn(dvb, "Sign in with link code", lambda: do_cloud("login"), accent=True)
+    pbtn(dvb, "Create link code for another device", do_link_code)
+    ttk.Label(dv, justify="left", style="Muted.TLabel", text=(
+        "Already registered on another PC? Press 'Create link code' there, then enter the code here and press Sign in.\n"
+        "Each device gets its own key for the same account; the code works once and expires after 10 minutes.")
+              ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     drv = group(ts, "Optional: auto-click the Drive button")
     af = ttk.Frame(drv)
@@ -1397,19 +1462,19 @@ def run_embedded_script(argv):
     script, rest = argv[0], argv[1:]
     sys.argv = [script, *rest]
     name = Path(script).stem
+    # Compiled modules (Nuitka) have no code object, so runpy cannot run them: import the module and call its main().
+    # Source and PyInstaller builds keep using runpy, which runs the module exactly as "python script.py" would.
+    compiled = "__compiled__" in globals() or (ac_paths.FROZEN and not hasattr(sys, "_MEIPASS"))
     try:
-        try:
-            runpy.run_module(name, run_name="__main__", alter_sys=True)
-        except ImportError as e:
-            # compiled modules (Nuitka) have no code object for runpy: import the module and call its main()
+        if compiled:
             import importlib
-            if "No code object" not in str(e) and not str(e).startswith("No module"):
-                raise
             main_fn = getattr(importlib.import_module(name), "main", None)
             if main_fn is None:
-                raise
+                print(f"{script} has no main() to run", file=sys.stderr)
+                return 1
             result = main_fn()
             return result if isinstance(result, int) else 0
+        runpy.run_module(name, run_name="__main__", alter_sys=True)
     except SystemExit as e:
         code = e.code
         return code if isinstance(code, int) else (0 if code is None else (print(code, file=sys.stderr) or 1))

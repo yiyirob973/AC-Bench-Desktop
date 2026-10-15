@@ -116,6 +116,31 @@ def cmd_register(args):
     print("Registered as %s (role %s). The key is saved in %s: keep that file private." % (r["name"], r["role"], CFG_FILE.name))
 
 
+def cmd_link(args):
+    """On a signed-in device: get a single-use code that signs another device in as the same account."""
+    cfg = settings(args)
+    code, r, _ = call(cfg, "POST", "/v1/devices/link", {}, auth=True)
+    if code != 201:
+        raise SystemExit("Could not create a link code at %s (HTTP %s): %s" % (cfg["server"], code, (r or {}).get("error", code)))
+    print("LINK CODE: %s" % r["code"])
+    print("Valid for %d minutes, works once. On the other device open the Setup tab, enter this code under "
+          "'Use the same account on another device' and press 'Sign in'." % (r["expires_in"] // 60))
+    return r
+
+
+def cmd_login(args):
+    """On a new device: trade a link code for this device's own key to the same account."""
+    cfg = settings(args)
+    import socket
+    print("Signing in at %s ..." % cfg["server"], flush=True)
+    code, r, _ = call(cfg, "POST", "/v1/devices/redeem", {"code": args.code.strip(), "label": socket.gethostname()})
+    if code != 201:
+        raise SystemExit("Sign-in failed at %s (HTTP %s): %s" % (cfg["server"], code, (r or {}).get("error", code)))
+    cfg["api_key"], cfg["name"] = r["api_key"], r["name"]
+    save_json(CFG_FILE, cfg)
+    print("Signed in as %s (role %s). This device has its own key, saved in %s: keep that file private." % (r["name"], r["role"], CFG_FILE.name))
+
+
 def latest_env(env_log):
     """(id, env) of the newest passing vanilla check that recorded an environment."""
     for entry in reversed(env_log):
@@ -327,6 +352,9 @@ def main():
     s = sub.add_parser("register")
     s.add_argument("--invite", required=True)
     s.add_argument("--name", required=True)
+    sub.add_parser("link")
+    s = sub.add_parser("login")
+    s.add_argument("--code", required=True)
     s = sub.add_parser("upload")
     s.add_argument("--results", default=str(HERE / "lap_results.json"))
     s.add_argument("--log", default=str(HERE / "track_check_log.json"))
@@ -341,7 +369,8 @@ def main():
                    help="also use classes backed by a single submission (less reliable)")
     args = ap.parse_args()
     try:
-        {"ping": cmd_ping, "register": cmd_register, "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
+        {"ping": cmd_ping, "register": cmd_register, "link": cmd_link, "login": cmd_login,
+         "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
     except ac_conditions.ConditionsUnavailable as e:
         raise SystemExit(str(e))
 

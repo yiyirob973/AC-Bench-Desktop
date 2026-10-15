@@ -174,3 +174,11 @@ code to C and produces a native program:
 
 Nuitka lowers the chance of a false positive a lot but cannot remove it: a new, unsigned, rarely downloaded program
 has no reputation. Signing the program with a code-signing certificate is what fixes that for good.
+
+
+## Same account on another device
+
+On the device that is already registered: Setup > **Create link code for another device** (or
+`python ac_cloud.py link`). On the new device: Setup > **Use the same account on another device**, enter the code and
+press **Sign in** (or `python ac_cloud.py login --code=XXXX-XXXX-XXXX`). The code works once and for 10 minutes; each
+device gets its own key for the same account, saved in its own `cloud_config.json`.
