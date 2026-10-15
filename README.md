@@ -140,3 +140,20 @@ The desktop app only measures lap times. It never works out a class itself: **Lo
 this PC. After **Upload my results** the server recomputes the scores, classifies the cars and answers with the class of
 every car just uploaded (printed in the log, then shown live in **Server cars**). Apply server classes as tags to write
 them into your cars.
+
+## Single portable exe
+
+`build_exe.bat` (or `pyinstaller --noconfirm AC-Bench.spec`) builds `dist\AC-Bench.exe` with PyInstaller. It needs
+`template_race.ini` in the folder and embeds it together with `bundled_car/` and `apps/lua/ac_bench/`.
+
+- **Embedded, read-only:** the race template, the benchmark car and the Lua logger are read from inside the exe. The
+  Setup tab's *Install / update required files* and the automatic install before each benchmark copy them from there
+  into Assetto Corsa. The user never provides any of them.
+- **Written next to the exe (portable):** settings, `lap_results.json`, `cloud_config.json`, the caches and logs. Copy
+  the folder and everything moves with it. If that folder is not writable (for example Program Files) the app uses
+  `%LOCALAPPDATA%\AC-Bench` instead. Nothing is ever written to the temporary unpack folder, which is
+  deleted when the app closes.
+- **Jobs:** there are no separate script files in the exe, so the app starts itself with `--ac-run <module>` to run
+  the benchmark, upload, vanilla check and tagging as child processes (same window, output shown in the log).
+- **Source form** still works unchanged (`run_gui.bat` / `python ac_bench_gui.py`); `ac_paths.py` is the one place that
+  decides where files live.

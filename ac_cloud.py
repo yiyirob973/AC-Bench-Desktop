@@ -23,8 +23,8 @@ import argparse, csv, json, sys, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+import ac_paths  # noqa: E402
+HERE = ac_paths.DATA   # settings, results and caches live beside the exe (or the .py files)
 from ac_car_classifier import read_ui, num, class_sort_key   # noqa: E402
 import ac_carid               # noqa: E402
 import ac_conditions          # noqa: E402  (profile, tracks, laps, environment: all come from the server)

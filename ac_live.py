@@ -13,7 +13,8 @@ from pathlib import Path
 import ac_carid
 import ac_cloud
 
-HERE = Path(__file__).resolve().parent
+import ac_paths  # noqa: E402
+HERE = ac_paths.DATA
 HASH_CACHE = HERE / "car_hash_cache.json"   # {car folder: {"sig": [...], "hash": hex or null}}: local hashes only
 BATCH = 500
 

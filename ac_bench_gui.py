@@ -27,8 +27,10 @@ import csv, json, os, queue, re, shutil, subprocess, sys, threading
 from datetime import datetime
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+import ac_paths  # noqa: E402  (the script's own folder is already first on sys.path when run as a script)
+
+HERE = ac_paths.DATA        # everything the app writes and keeps: settings, results, caches (beside the exe)
+RES = ac_paths.RES          # everything shipped inside the app: race template, benchmark car, Lua logger
 from ac_car_classifier import class_sort_key  # noqa: E402
 import ac_conditions as cond  # noqa: E402
 import ac_live  # noqa: E402  (live per-car lookups for the Server cars list)
@@ -45,9 +47,9 @@ CLOUD_MISSING = HERE / "cloud_missing.txt"
 CLOUD_TABLE = HERE / "cloud_classes.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 
-BUNDLED_CAR_DIR = HERE / "bundled_car"    # holds ONE car folder (the car the benchmark drives); installed into AC
-BUNDLED_LUA_APP = HERE / "apps" / "lua" / "ac_bench"   # the in-game lap logger, installed into AC's apps/lua
-TEMPLATE = HERE / "template_race.ini"     # bundled with the app: the user never provides a race.ini
+BUNDLED_CAR_DIR = RES / "bundled_car"    # holds ONE car folder (the car the benchmark drives); installed into AC
+BUNDLED_LUA_APP = RES / "apps" / "lua" / "ac_bench"   # the in-game lap logger, installed into AC's apps/lua
+TEMPLATE = RES / "template_race.ini"      # embedded in the app: the user never provides a race.ini
 TAG_PREFIX = "#Pride-"                    # class tags are always "#Pride-<class>", not configurable
 LEGACY_TAG_PREFIXES = ["#grid-class-"]    # tags from the earlier tool version: replaced, never left next to the new one
 
@@ -116,7 +118,7 @@ def install_bundled_lua_app(ac_dir, say=print):
     -> True if the logger is installed and identical to the bundled copy."""
     src = BUNDLED_LUA_APP
     if not src.is_dir() or not any(src.iterdir()):
-        say(f"The bundled Lua logger is missing from the app folder ({src}).\n")
+        say(f"The bundled Lua logger is missing from this app ({src}).\n")
         return False
     dst = Path(ac_dir) / "apps" / "lua" / src.name
     want = ac_track_check.hash_tree(src)
@@ -139,7 +141,7 @@ def bundled_car_state(ac_dir):
     """(code, text) for the bundled benchmark car in <AC>/content/cars: ok | missing | outdated | nobundle."""
     car = bundled_car_id()
     if car is None:
-        return "nobundle", "No benchmark car in the app folder (bundled_car): reinstall or restore the app files"
+        return "nobundle", "No benchmark car embedded in this app (bundled_car): reinstall or restore the app files"
     dst = Path(ac_dir) / "content" / "cars" / car
     if not dst.is_dir():
         return "missing", f"Benchmark car {car} is not installed"
@@ -153,7 +155,7 @@ def bundled_lua_state(ac_dir):
     """(code, text) for the bundled Lua lap logger in <AC>/apps/lua/<name>: ok | missing | outdated | nobundle."""
     src = BUNDLED_LUA_APP
     if not src.is_dir() or not any(src.iterdir()):
-        return "nobundle", "No Lua logger in the app folder (apps/lua/ac_bench): reinstall or restore the app files"
+        return "nobundle", "No Lua logger embedded in this app (apps/lua/ac_bench): reinstall or restore the app files"
     dst = Path(ac_dir) / "apps" / "lua" / src.name
     if not dst.is_dir():
         return "missing", "Lap logger (Lua app) is not installed"
@@ -553,10 +555,9 @@ def main():
         last_line.set("")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            proc = subprocess.Popen([sys.executable, "-u", *cmd], cwd=HERE, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(script_command(cmd), cwd=HERE, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                    errors="replace", creationflags=flags,
-                                    env=dict(os.environ, PYTHONUNBUFFERED="1"))
+                                    errors="replace", creationflags=flags, env=script_env())
         except Exception as e:
             messagebox.showerror("Could not start", str(e))
             return
@@ -616,7 +617,7 @@ def main():
             messagebox.showwarning("AC folder", "acs.exe not found in the Assetto Corsa folder.")
             return None
         if not TEMPLATE.exists():
-            messagebox.showwarning("Template", f"{TEMPLATE.name} is missing from the app folder. "
+            messagebox.showwarning("Template", f"{TEMPLATE.name} is missing from this app (it should be embedded). "
                                                "Reinstall or restore the app files.")
             return None
         if not install_required(c):
@@ -1366,5 +1367,92 @@ def main():
     root.mainloop()
 
 
+def script_command(cmd):
+    """Command line that runs one of the app's scripts (cmd = ["ac_lap_bench.py", args...]).
+    From source that is python -u script.py. In the single exe there are no script files: the exe starts itself
+    with --ac-run and runs the embedded module (see run_embedded_script)."""
+    if ac_paths.FROZEN:
+        return [sys.executable, "--ac-run", *cmd]
+    return [sys.executable, "-u", *cmd]
+
+
+def script_env():
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    if ac_paths.FROZEN:
+        # a one-file exe starting itself as an independent process must unpack its own copy of the embedded files
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
+def run_embedded_script(argv):
+    """argv = ["ac_lap_bench.py", args...]: run that embedded module as __main__ (used by the exe's child processes)."""
+    import runpy
+    for name, fd in (("stdout", 1), ("stderr", 2)):      # a windowed exe may start without console streams
+        if getattr(sys, name) is None:
+            try:
+                setattr(sys, name, open(fd, "w", encoding="utf-8", buffering=1, closefd=False))
+            except OSError:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+    script, rest = argv[0], argv[1:]
+    sys.argv = [script, *rest]
+    try:
+        runpy.run_module(Path(script).stem, run_name="__main__", alter_sys=True)
+    except SystemExit as e:
+        code = e.code
+        return code if isinstance(code, int) else (0 if code is None else (print(code, file=sys.stderr) or 1))
+    return 0
+
+
+def selfcheck():
+    """--ac-selfcheck: confirm this build carries everything it needs (used by the CI build; exit 0 = fine).
+    Checks the embedded race template, benchmark car and Lua logger, that every module the app starts as a job is
+    importable, and that the folder for settings and results is writable."""
+    import importlib
+    for name, fd in (("stdout", 1), ("stderr", 2)):
+        if getattr(sys, name) is None:
+            try:
+                setattr(sys, name, open(fd, "w", encoding="utf-8", buffering=1, closefd=False))
+            except OSError:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+    bad = []
+
+    def check(ok, text):
+        print(("OK    " if ok else "FAIL  ") + text)
+        if not ok:
+            bad.append(text)
+
+    check(TEMPLATE.is_file(), f"embedded race template: {TEMPLATE}")
+    cars = [p for p in BUNDLED_CAR_DIR.iterdir() if p.is_dir()] if BUNDLED_CAR_DIR.is_dir() else []
+    check(len(cars) == 1 and ((cars[0] / "data").exists() or (cars[0] / "data.acd").exists()),
+          f"embedded benchmark car: {[p.name for p in cars]}")
+    lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
+    check("ac_bench.lua" in lua and "manifest.ini" in lua, f"embedded Lua logger: {lua}")
+    for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
+                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_classify_laps",
+                "ac_grid_builder", "tkinter"):
+        try:
+            importlib.import_module(mod)
+            ok = True
+        except cond.ConditionsUnavailable:
+            ok = True     # imported fine; it only wants the server's conditions at run time
+        except Exception as e:
+            ok = False
+            print("      " + type(e).__name__ + ": " + str(e))
+        check(ok, f"module {mod}")
+    try:
+        probe = HERE / ".selfcheck"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        check(True, f"settings and results folder is writable: {HERE}")
+    except OSError as e:
+        check(False, f"settings and results folder is not writable: {HERE} ({e})")
+    print("SELFCHECK " + ("FAILED" if bad else "PASSED"))
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--ac-run":
+        sys.exit(run_embedded_script(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--ac-selfcheck":
+        sys.exit(selfcheck())
     main()

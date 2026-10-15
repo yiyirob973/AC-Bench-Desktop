@@ -24,6 +24,7 @@ import argparse, configparser, hashlib, json, os, sys, time
 from pathlib import Path
 
 import ac_conditions
+import ac_paths
 
 JUNK = {"thumbs.db", "desktop.ini", ".ds_store"}          # OS clutter, never part of the game
 COND_SECTIONS = ("DYNAMIC_TRACK", "WEATHER", "TEMPERATURE", "LIGHTING")
@@ -97,7 +98,7 @@ def digest(files):
     return h.hexdigest()
 
 
-REFERENCE_FILE = Path(__file__).resolve().with_name("track_reference.json")
+REFERENCE_FILE = ac_paths.DATA / "track_reference.json"
 
 
 def create(ac, out=None, say=print, server=None):
@@ -269,7 +270,7 @@ def main():
     ap = argparse.ArgumentParser(description="Vanilla track check against the server's environment")
     ap.add_argument("action", choices=["verify", "create"])
     ap.add_argument("--ac-dir", required=True)
-    ap.add_argument("--log", default=str(Path(__file__).resolve().with_name("track_check_log.json")),
+    ap.add_argument("--log", default=str(ac_paths.DATA / "track_check_log.json"),
                     help="append the result (with the environment id) to this log")
     # accepted and ignored, so old command lines keep working; nothing about the baseline is chosen here
     ap.add_argument("--out", help="create: where to write the reference (default track_reference.json)")

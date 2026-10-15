@@ -38,6 +38,7 @@ from pathlib import Path
 DEFAULT_AC = r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa"
 import ac_baseline as bl      # tracks, laps, AI settings and race conditions are pinned there
 import ac_rating as rating    # lap scoring: lap 1 dropped, median of the timed laps
+import ac_paths               # where user data lives (beside the exe) vs files shipped inside it
 import ac_carid               # car identity (hash of the physics files), used by the cloud upload
 
 
@@ -307,7 +308,7 @@ def main():
     ap.add_argument("--click-delay", type=int, default=25, help="seconds after launch before the first start attempt")
     ap.add_argument("--click-interval", type=int, default=6, help="seconds between start attempts")
     ap.add_argument("--click-max", type=int, default=40, help="max start attempts per launch")
-    ap.add_argument("--reference", default=str(Path(__file__).resolve().with_name("track_reference.json")),
+    ap.add_argument("--reference", default=str(ac_paths.DATA / "track_reference.json"),
                     help="vanilla track reference made by ac_track_check.py create")
     ap.add_argument("--skip-track-check", action="store_true",
                     help="do NOT verify the tracks are vanilla (ratings may not be comparable)")

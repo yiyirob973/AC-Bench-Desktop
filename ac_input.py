@@ -15,7 +15,8 @@ don't use the PC for other things while a benchmark runs.
 import json, sys, time
 from pathlib import Path
 
-CFG = Path(__file__).resolve().with_name("drive_click.json")
+import ac_paths  # noqa: E402
+CFG = ac_paths.DATA / "drive_click.json"
 TITLE = "Assetto Corsa"
 KEYS = {"enter": 0x0D, "space": 0x20, "esc": 0x1B, "tab": 0x09,
         **{f"f{i}": 0x6F + i for i in range(1, 13)}}

@@ -17,7 +17,8 @@ import argparse, json, os, re, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-HERE = Path(__file__).resolve().parent
+import ac_paths  # noqa: E402
+HERE = ac_paths.DATA
 CACHE = HERE / "conditions_cache.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 MAX_AGE_S = 12 * 3600
