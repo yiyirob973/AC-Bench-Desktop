@@ -1379,8 +1379,8 @@ def script_command(cmd):
 
 def script_env():
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    if ac_paths.FROZEN:
-        # a one-file exe starting itself as an independent process must unpack its own copy of the embedded files
+    if ac_paths.FROZEN and hasattr(sys, "_MEIPASS"):
+        # a PyInstaller one-file exe starting itself as an independent process must unpack its own copy of the embedded files
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
 
@@ -1396,8 +1396,20 @@ def run_embedded_script(argv):
                 setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
     script, rest = argv[0], argv[1:]
     sys.argv = [script, *rest]
+    name = Path(script).stem
     try:
-        runpy.run_module(Path(script).stem, run_name="__main__", alter_sys=True)
+        try:
+            runpy.run_module(name, run_name="__main__", alter_sys=True)
+        except ImportError as e:
+            # compiled modules (Nuitka) have no code object for runpy: import the module and call its main()
+            import importlib
+            if "No code object" not in str(e) and not str(e).startswith("No module"):
+                raise
+            main_fn = getattr(importlib.import_module(name), "main", None)
+            if main_fn is None:
+                raise
+            result = main_fn()
+            return result if isinstance(result, int) else 0
     except SystemExit as e:
         code = e.code
         return code if isinstance(code, int) else (0 if code is None else (print(code, file=sys.stderr) or 1))

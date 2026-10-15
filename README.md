@@ -157,3 +157,20 @@ them into your cars.
   the benchmark, upload, vanilla check and tagging as child processes (same window, output shown in the log).
 - **Source form** still works unchanged (`run_gui.bat` / `python ac_bench_gui.py`); `ac_paths.py` is the one place that
   decides where files live.
+
+## Building without antivirus false positives
+
+PyInstaller output is flagged by many antivirus products because every PyInstaller program carries the same,
+widely known bootloader. The GitHub workflow `.github/workflows/build.yml` therefore uses **Nuitka**, which compiles the
+code to C and produces a native program:
+
+- Default: a folder, zipped as `AC-Bench-Portable.zip` (with a `.sha256`). Unzip anywhere and run `AC-Bench.exe`;
+  settings and results are written next to it, so the folder is portable.
+- Start the workflow by hand with **onefile** ticked for a single `AC-Bench.exe` (self-extracting programs are flagged
+  more often).
+- The old PyInstaller build is kept as `build-pyinstaller.yml` (manual start only).
+- Every build self-checks the finished program (`--ac-selfcheck`: embedded template, car and Lua logger present, all
+  modules importable) and starts a job through `--ac-run` before the artifact is uploaded.
+
+Nuitka lowers the chance of a false positive a lot but cannot remove it: a new, unsigned, rarely downloaded program
+has no reputation. Signing the program with a code-signing certificate is what fixes that for good.

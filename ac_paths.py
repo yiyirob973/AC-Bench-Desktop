@@ -1,5 +1,5 @@
 """
-Where the app's files are, in source form and as a single portable exe (PyInstaller onefile).
+Where the app's files are: from source, and in a packaged build (Nuitka standalone/onefile or PyInstaller).
 
 RES   read-only files shipped inside the app: template_race.ini, bundled_car/, apps/lua/ac_bench/.
       In the exe these are unpacked to a temporary folder (sys._MEIPASS) that is DELETED when the app closes,
@@ -13,7 +13,8 @@ import os
 import sys
 from pathlib import Path
 
-FROZEN = bool(getattr(sys, "frozen", False))
+# PyInstaller sets sys.frozen; Nuitka does not, but defines __compiled__ in every compiled module
+FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 APP_NAME = "AC-Bench"
 
 
@@ -28,10 +29,19 @@ def _writable(folder):
         return False
 
 
+def _exe_folder():
+    """The folder the user's exe sits in (for a Nuitka onefile build: the original exe, not the unpack folder)."""
+    compiled = globals().get("__compiled__")
+    containing = getattr(compiled, "containing_dir", None)
+    if containing:
+        return Path(containing).resolve()
+    return Path(sys.executable).resolve().parent
+
+
 def _data_dir():
     if not FROZEN:
         return Path(__file__).resolve().parent
-    beside_exe = Path(sys.executable).resolve().parent
+    beside_exe = _exe_folder()
     if _writable(beside_exe):
         return beside_exe
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")

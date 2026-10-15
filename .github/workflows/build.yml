@@ -1,9 +1,18 @@
-name: Build Portable Executable
+name: Build Portable App (Nuitka)
 
+# Nuitka compiles the Python code to C and builds a native program, so the result does not carry the PyInstaller
+# bootloader that antivirus products recognise and flag. The default output is a folder (zipped): run AC-Bench.exe
+# inside it, and settings and results are written next to it. Start the workflow by hand with "onefile" ticked
+# to get a single exe instead (self-extracting builds are flagged more often).
 on:
   push:
     branches: [ dev ]
-  workflow_dispatch:        # also lets you start a build by hand from the Actions tab
+  workflow_dispatch:
+    inputs:
+      onefile:
+        description: 'Build a single exe instead of a folder'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -16,13 +25,13 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.12'
 
     - name: Check the files that get embedded are in the repository
       shell: pwsh
       run: |
         $missing = @()
-        foreach ($p in 'AC-Bench.spec', 'template_race.ini', 'bundled_car', 'apps/lua/ac_bench/ac_bench.lua') {
+        foreach ($p in 'template_race.ini', 'bundled_car', 'apps/lua/ac_bench/ac_bench.lua', 'ac_bench_gui.py') {
           if (-not (Test-Path $p)) { $missing += $p }
         }
         if ($missing.Count -gt 0) {
@@ -33,41 +42,86 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install "pyinstaller>=6.9"
+        pip install nuitka ordered-set zstandard
         if (Test-Path requirements.txt) { pip install -r requirements.txt }
 
-    # The spec embeds template_race.ini, bundled_car and apps, and lists every ac_* module the app starts as a job
-    - name: Build Executable with PyInstaller
-      run: pyinstaller --noconfirm AC-Bench.spec
+    # The race template, benchmark car and Lua logger are shipped with the app; every ac_* module is listed because the
+    # app starts its jobs (benchmark, upload, vanilla check, tags) by running its own modules, which nothing imports directly.
+    - name: Build with Nuitka
+      shell: pwsh
+      env:
+        ONEFILE: ${{ inputs.onefile }}
+      run: |
+        $mode = if ($env:ONEFILE -eq 'true') { '--onefile' } else { '--standalone' }
+        python -m nuitka $mode `
+          --msvc=latest `
+          --assume-yes-for-downloads `
+          --enable-plugin=tk-inter `
+          --windows-console-mode=disable `
+          --output-dir=build `
+          --output-filename=AC-Bench.exe `
+          --product-name="AC Bench" `
+          --company-name="AC Bench" `
+          --file-description="AC Bench desktop app" `
+          --product-version=1.0.0 `
+          --file-version=1.0.0.${{ github.run_number }} `
+          --include-data-files=template_race.ini=template_race.ini `
+          --include-data-dir=bundled_car=bundled_car `
+          --include-data-dir=apps=apps `
+          --include-module=ac_paths --include-module=ac_lap_bench --include-module=ac_cloud `
+          --include-module=ac_conditions --include-module=ac_live --include-module=ac_tag_writer `
+          --include-module=ac_track_check --include-module=ac_baseline --include-module=ac_rating `
+          --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input `
+          --include-module=ac_classify_laps --include-module=ac_grid_builder `
+          ac_bench_gui.py
+        if ($LASTEXITCODE -ne 0) { Write-Error "Nuitka build failed"; exit 1 }
+        $exe = if ($env:ONEFILE -eq 'true') { 'build\AC-Bench.exe' } else { 'build\ac_bench_gui.dist\AC-Bench.exe' }
+        if (-not (Test-Path $exe)) { Write-Error "Expected $exe was not produced"; exit 1 }
+        "APP_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-    # Runs the built exe: embedded template/car/Lua logger present, every module importable, data folder writable
-    - name: Self-check the executable
+    # Runs the built app: embedded template/car/Lua logger present, every module importable, data folder writable
+    - name: Self-check the app
       shell: pwsh
       run: |
-        $p = Start-Process -FilePath "dist\AC-Bench.exe" -ArgumentList "--ac-selfcheck" -Wait -PassThru `
+        $p = Start-Process -FilePath $env:APP_EXE -ArgumentList "--ac-selfcheck" -Wait -PassThru `
              -RedirectStandardOutput selfcheck_out.txt -RedirectStandardError selfcheck_err.txt
         $p.WaitForExit()
         Get-Content selfcheck_out.txt
         Get-Content selfcheck_err.txt
         if ($p.ExitCode -ne 0) { Write-Error "Self-check failed (exit $($p.ExitCode))"; exit 1 }
 
-    # Runs one of the job scripts the way the app does (the exe starting itself with --ac-run)
+    # Runs one of the job modules the way the app does (the program starting itself with --ac-run)
     - name: Smoke-test starting a job
       shell: pwsh
       run: |
-        $p = Start-Process -FilePath "dist\AC-Bench.exe" -ArgumentList "--ac-run", "ac_conditions.py", "--help" -Wait -PassThru `
+        $p = Start-Process -FilePath $env:APP_EXE -ArgumentList "--ac-run", "ac_conditions.py", "--help" -Wait -PassThru `
              -RedirectStandardOutput job_out.txt -RedirectStandardError job_err.txt
         $p.WaitForExit()
         Get-Content job_out.txt
         Get-Content job_err.txt
         if ($p.ExitCode -ne 0 -or -not (Select-String -Path job_out.txt -Pattern "usage")) {
-          Write-Error "Starting a job from the exe failed (exit $($p.ExitCode))"
+          Write-Error "Starting a job from the app failed (exit $($p.ExitCode))"
           exit 1
         }
+
+    - name: Package
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path package | Out-Null
+        if ($env:APP_EXE -like '*.dist*') {
+          Compress-Archive -Path "build\ac_bench_gui.dist\*" -DestinationPath package\AC-Bench-Portable.zip
+        } else {
+          Copy-Item $env:APP_EXE package\AC-Bench.exe
+        }
+        Get-ChildItem package | ForEach-Object {
+          $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+          "$h  $($_.Name)" | Out-File -FilePath "$($_.FullName).sha256" -Encoding ascii
+        }
+        Get-ChildItem package
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AC-Bench-Desktop-Executable
-        path: dist/AC-Bench.exe
+        name: AC-Bench-Portable
+        path: package/*
         if-no-files-found: error
