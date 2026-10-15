@@ -106,9 +106,11 @@ def cmd_ping(args):
 
 def cmd_register(args):
     cfg = settings(args)
-    code, r, _ = call(cfg, "POST", "/v1/register", {"invite": args.invite, "name": args.name})
+    print("Registering as %s with %s (invite code of %d characters) ..." % (args.name, cfg["server"], len(args.invite.strip())),
+          flush=True)
+    code, r, _ = call(cfg, "POST", "/v1/register", {"invite": args.invite.strip(), "name": args.name.strip()})
     if code != 201:
-        raise SystemExit("Registration failed: %s" % (r or {}).get("error", code))
+        raise SystemExit("Registration failed at %s (HTTP %s): %s" % (cfg["server"], code, (r or {}).get("error", code)))
     cfg["api_key"], cfg["name"] = r["api_key"], r["name"]
     save_json(CFG_FILE, cfg)
     print("Registered as %s (role %s). The key is saved in %s: keep that file private." % (r["name"], r["role"], CFG_FILE.name))

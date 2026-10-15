@@ -198,7 +198,8 @@ def cloud_cmd(c, action):
     if action == "ping":
         return cmd + ["ping"]
     if action == "register":
-        return cmd + ["register", "--invite", str(c["cloud_invite"]).strip(), "--name", str(c["cloud_name"]).strip()]
+        # --invite=VALUE keeps a code that starts with "-" from being mistaken for an option
+        return cmd + ["register", "--invite=" + str(c["cloud_invite"]).strip(), "--name=" + str(c["cloud_name"]).strip()]
     cmd += [action, "--cars-dir", cars_dir(c)]
     if action == "upload" and c.get("cloud_attest"):
         cmd.append("--attest-legacy")
