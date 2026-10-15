@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Simple GUI for the AC car benchmark tools. Keep this file in the same folder as ac_lap_bench.py, ac_conditions.py,
-ac_baseline.py, ac_track_check.py, ac_cloud.py, ac_car_classifier.py and ac_tag_writer.py. Results (lap_results.json)
+ac_baseline.py, ac_track_check.py, ac_cloud.py, ac_car_classifier.py and ac_tag_writer.py, plus the bundled
+template_race.ini (the race.ini the benchmark runs are built from) a bundled_car/<car id>/ folder (the car
+the benchmark drives) and apps/lua/ac_bench/ (the in-game lap logger). The car and the logger are installed into
+Assetto Corsa automatically before each benchmark; the user is never asked for any of these. Results (lap_results.json)
 are saved in that folder. Settings are remembered in ac_bench_gui.json.
 
 Tabs
@@ -19,7 +22,7 @@ the Server cars list until you close the app).
 
 Run: python ac_bench_gui.py   (tkinter ships with the python.org installer)
 """
-import csv, json, os, queue, subprocess, sys, threading
+import csv, json, os, queue, re, shutil, subprocess, sys, threading
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +30,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from ac_car_classifier import class_sort_key  # noqa: E402
 import ac_conditions as cond  # noqa: E402
+import ac_track_check  # noqa: E402  (file hashing, used to compare the bundled car with the installed one)
 
 cond.ALLOW_STALE = True  # this process only: show the last known conditions while offline. Jobs never do this.
 
@@ -39,6 +43,9 @@ CLOUD_MISSING = HERE / "cloud_missing.txt"
 CLOUD_TABLE = HERE / "cloud_classes.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 
+BUNDLED_CAR_DIR = HERE / "bundled_car"    # holds ONE car folder (the car the benchmark drives); installed into AC
+BUNDLED_LUA_APP = HERE / "apps" / "lua" / "ac_bench"   # the in-game lap logger, installed into AC's apps/lua
+TEMPLATE = HERE / "template_race.ini"     # bundled with the app: the user never provides a race.ini
 TAG_PREFIX = "#Pride-"                    # class tags are always "#Pride-<class>", not configurable
 LEGACY_TAG_PREFIXES = ["#grid-class-"]    # tags from the earlier tool version: replaced, never left next to the new one
 CLASS_GAP, MIN_CLASS_SIZE, FIXED_CLASSES = 2.0, 3, 0   # how the Local cars list groups your own results
@@ -46,7 +53,7 @@ CLASS_GAP, MIN_CLASS_SIZE, FIXED_CLASSES = 2.0, 3, 0   # how the Local cars list
 DEFAULTS = {
     "ac_dir": r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa",
     "docs_dir": str(Path.home() / "Documents" / "Assetto Corsa"),
-    "template": "", "group_by": "",
+    "group_by": "",
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
     "auto_drive": False, "click_delay": 25, "press_key": "",
@@ -63,16 +70,81 @@ def cars_dir(c):
     return str(Path(c["ac_dir"]) / "content" / "cars")
 
 
+def bundled_car_id():
+    """Folder name of the bundled benchmark car (bundled_car/<id>/), or None if there is none (or not exactly one)."""
+    try:
+        dirs = [p for p in BUNDLED_CAR_DIR.iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    return dirs[0].name if len(dirs) == 1 else None
+
+
+def exclude_regex(user_regex=""):
+    """The user's 'skip' regex plus the bundled car, which is never a test car, never listed and never tagged."""
+    parts = [f"(?:{user_regex})"] if str(user_regex).strip() else []
+    car = bundled_car_id()
+    if car:
+        parts.append(f"^{re.escape(car)}$")
+    return "|".join(parts)
+
+
+def install_bundled_car(ac_dir, say=print):
+    """Make sure the bundled benchmark car is installed in content/cars and identical to the bundled copy
+    (a different or damaged copy is replaced). -> True if the car is ready (or there is no bundled car)."""
+    car = bundled_car_id()
+    if car is None:
+        if BUNDLED_CAR_DIR.is_dir() and any(p.is_dir() for p in BUNDLED_CAR_DIR.iterdir()):
+            say("bundled_car must contain exactly one car folder.\n")
+            return False
+        say("No bundled benchmark car found (bundled_car folder): nothing to install.\n")
+        return True
+    src, dst = BUNDLED_CAR_DIR / car, Path(ac_dir) / "content" / "cars" / car
+    want = ac_track_check.digest(ac_track_check.hash_tree(src))
+    if dst.is_dir() and ac_track_check.digest(ac_track_check.hash_tree(dst)) == want:
+        return True
+    say(f"Installing the benchmark car {car} into {dst} ...\n")
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    return ac_track_check.digest(ac_track_check.hash_tree(dst)) == want
+
+
+def install_bundled_lua_app(ac_dir, say=print):
+    """Install or update the bundled Lua lap logger in <AC>/apps/lua/<name>. Only the bundled files are compared
+    and copied (other files in that folder, such as anything the logger writes, are left alone).
+    -> True if the logger is installed and identical to the bundled copy."""
+    src = BUNDLED_LUA_APP
+    if not src.is_dir() or not any(src.iterdir()):
+        say(f"The bundled Lua logger is missing from the app folder ({src}).\n")
+        return False
+    dst = Path(ac_dir) / "apps" / "lua" / src.name
+    want = ac_track_check.hash_tree(src)
+    have = ac_track_check.hash_tree(dst) if dst.is_dir() else {}
+    changed = sorted(f for f in want if have.get(f) != want[f])
+    for f in changed:
+        target = dst / f
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src / f, target)
+    if changed:
+        say(f"Installed the AC Bench Lua logger into {dst} ({len(changed)} file(s) updated).\n")
+    extras = sorted(f for f in have if f not in want and f.lower().endswith((".lua", ".ini")))
+    if extras:
+        say("WARNING: extra Lua/ini files in the logger's folder may change its behaviour: " + ", ".join(extras) + "\n")
+    after = ac_track_check.hash_tree(dst)
+    return all(after.get(f) == want[f] for f in want)
+
+
 def bench_cmd(c, extra=()):
     cmd = ["ac_lap_bench.py", "--ac-dir", c["ac_dir"], "--docs-dir", c["docs_dir"],
-           "--template", c["template"], "--batch", str(c["batch"]),
+           "--template", str(TEMPLATE), "--batch", str(c["batch"]),
            "--results", str(RESULTS), "--stop-file", str(STOP_FILE)]
     if c["group_by"]:
         cmd += ["--group-by", c["group_by"]]
     if c["include"]:
         cmd += ["--include", c["include"]]
-    if c["exclude"]:
-        cmd += ["--exclude", c["exclude"]]
+    ex = exclude_regex(c["exclude"])
+    if ex:
+        cmd += ["--exclude", ex]
     if c["retry_failed"]:
         cmd.append("--retry-failed")
     if c["auto_drive"]:
@@ -117,6 +189,14 @@ def verify_cmd(c):
     return ["ac_track_check.py", "verify", "--ac-dir", c["ac_dir"]]
 
 
+def create_ref_cmd(c, out=""):
+    """Operator: build the canonical track reference from this install (the track list comes from the server)."""
+    cmd = ["ac_track_check.py", "create", "--ac-dir", c["ac_dir"]]
+    if out:
+        cmd += ["--out", out]
+    return cmd
+
+
 def probe_cmd(c, ids=None):
     ids = list(ids) if ids is not None else c["probe_ids"].split()
     return bench_cmd(c, ["--probe", *ids])
@@ -130,6 +210,8 @@ def tag_cmd(c, mode, classes=None):
     if mode == "apply":
         cmd.append(str(classes))
     cmd += ["--prefix", TAG_PREFIX]
+    if mode == "apply" and bundled_car_id():
+        cmd += ["--exclude", exclude_regex()]
     for old in LEGACY_TAG_PREFIXES:
         cmd += ["--also-remove", old]
     cmd.append("--apply")
@@ -479,14 +561,33 @@ def main():
         return c
 
     def need_bench():
-        c = need("ac_dir", "docs_dir", "template")
+        c = need("ac_dir", "docs_dir")
         if not c:
             return None
         if not (Path(c["ac_dir"]) / "acs.exe").exists():
             messagebox.showwarning("AC folder", "acs.exe not found in the Assetto Corsa folder.")
             return None
-        if not Path(c["template"]).exists():
-            messagebox.showwarning("Template", "Template race.ini not found.")
+        if not TEMPLATE.exists():
+            messagebox.showwarning("Template", f"{TEMPLATE.name} is missing from the app folder. "
+                                               "Reinstall or restore the app files.")
+            return None
+        try:
+            car_ok = install_bundled_car(c["ac_dir"], say=write)
+        except OSError as e:
+            messagebox.showerror("Benchmark car", f"Could not install the bundled benchmark car: {e}")
+            return None
+        if not car_ok:
+            messagebox.showwarning("Benchmark car", "The bundled benchmark car could not be installed correctly "
+                                                    "(see the log). Reinstall or restore the app files.")
+            return None
+        try:
+            lua_ok = install_bundled_lua_app(c["ac_dir"], say=write)
+        except OSError as e:
+            messagebox.showerror("Lua logger", f"Could not install the bundled Lua logger: {e}")
+            return None
+        if not lua_ok:
+            messagebox.showwarning("Lua logger", "The bundled Lua logger could not be installed correctly "
+                                                 "(see the log). Reinstall or restore the app files.")
             return None
         return c
 
@@ -596,6 +697,21 @@ def main():
         if need("ac_dir"):
             run_with_conditions(lambda: verify_cmd(cfg()))
 
+    def do_create_ref():
+        c = need("ac_dir", "cloud_url")
+        if not c:
+            return
+        if not messagebox.askyesno("Create track reference",
+                                   "This turns THIS Assetto Corsa install into the canonical reference for the server: "
+                                   "every benchmark track folder and acs.exe are fingerprinted.\n\n"
+                                   "Only do this on a clean install (Steam > Verify integrity of game files, no extra "
+                                   "files in the track folders, no CSP track configs).\n\nContinue?"):
+            return
+        out = filedialog.asksaveasfilename(title="Save the track reference", defaultextension=".json",
+                                           initialfile="track_reference.json", filetypes=[("JSON", "*.json")])
+        if out:
+            run(create_ref_cmd(c, out))   # reads only the track list from the server; needs no environment
+
     def do_steam():
         try:
             os.startfile("steam://validate/244210")
@@ -606,18 +722,26 @@ def main():
     vf = ttk.Frame(tv)
     vf.pack(fill="x")
     pbtn(vf, "Verify tracks now", do_verify, accent=True)
-    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left")
+    ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left", padx=(0, 6))
+    ttk.Button(vf, text="Create track reference (server operator)", command=do_create_ref).pack(side="left")
     ttk.Label(tv, justify="left", style="Muted.TLabel", text=(
         "Compares every file of the benchmark tracks (including the AI racing lines) and acs.exe (the AI driving\n"
         "code) with the environment the server publishes. Benchmarks run this check first and stop on any\n"
         "difference. The server only keeps fingerprints, so a mismatch cannot list the files: use Steam's\n"
         "'Verify integrity of game files' and remove any extra files you added to the track folders.\n"
-        "The tracks, laps and race settings are set by the server and cannot be changed here.")
+        "The tracks, laps and race settings are set by the server and cannot be changed here.\n"
+        "Server operators: 'Create track reference' fingerprints this (clean) install into a file; load it on the\n"
+        "server with: python server.py set-env --from <file>.")
               ).pack(anchor="w", pady=10)
 
     def vstatus_hook():
         cmd = state.get("last_cmd") or []
-        if len(cmd) > 1 and cmd[0] == "ac_track_check.py":
+        if len(cmd) > 1 and cmd[0] == "ac_track_check.py" and cmd[1] == "create":
+            rc = state.get("last_rc")
+            vstat.set({0: "Track reference created (see log for the file and the set-env command)",
+                       2: "Reference NOT created: install incomplete (see log)",
+                       3: "Cannot create: no track list from the server"}.get(rc, f"Create failed (exit {rc})"))
+        elif len(cmd) > 1 and cmd[0] == "ac_track_check.py":
             rc = state.get("last_rc")
             vstat.set({0: "Tracks are vanilla: identical to the server's environment",
                        2: "NOT VANILLA: differs from the server's environment (see log)",
@@ -631,8 +755,7 @@ def main():
     acg = group(ts, "Assetto Corsa")
     entry_row(acg, 0, "Assetto Corsa folder", "ac_dir", "dir")
     entry_row(acg, 1, "Documents/Assetto Corsa", "docs_dir", "dir")
-    entry_row(acg, 2, "Template race.ini", "template", "file")
-    entry_row(acg, 3, "Batch grouping CSV (optional)", "group_by", "file")
+    entry_row(acg, 2, "Batch grouping CSV (optional)", "group_by", "file")
 
     sg = group(ts, "Server")
     entry_row(sg, 0, "Server address (https://...)", "cloud_url")
@@ -898,7 +1021,9 @@ def main():
             local_sec["count"].set("loading cars...")
             server_sec["count"].set("loading cars...")
             root.update_idletasks()
-            state["cars"], state["cars_dir"] = load_car_names(c["ac_dir"]), c["ac_dir"]
+            skip = bundled_car_id()
+            state["cars"] = [x for x in load_car_names(c["ac_dir"]) if x[0] != skip]
+            state["cars_dir"] = c["ac_dir"]
         try:
             results = json.loads(RESULTS.read_text(encoding="utf-8")) if RESULTS.exists() else {}
         except Exception:
@@ -1019,14 +1144,18 @@ def main():
         c = need_bench()
         if not c:
             return
-        ids = CLOUD_MISSING.read_text(encoding="utf-8").split() if CLOUD_MISSING.exists() else []
+        skip = bundled_car_id()
+        ids = [i for i in (CLOUD_MISSING.read_text(encoding="utf-8").split() if CLOUD_MISSING.exists() else [])
+               if i != skip]
         if not ids:
             messagebox.showinfo("Server", "Nothing to benchmark. Press 'Download and apply tags' first; "
                                           "it lists the cars the server has no class for.")
             return
         if len(ids) > 20 and not messagebox.askyesno("Server", f"{len(ids)} cars have no server class yet. Benchmark them all?"):
             return
-        run_with_conditions(lambda: bench_cmd(cfg(), ["--ids-file", str(CLOUD_MISSING)]), graceful=True)
+        todo = HERE / "cloud_missing_run.txt"
+        todo.write_text("\n".join(ids) + "\n", encoding="utf-8")
+        run_with_conditions(lambda: bench_cmd(cfg(), ["--ids-file", str(todo)]), graceful=True)
 
     hooks.append(lambda: refresh_cloud_status())
     hooks.append(purge_hook)

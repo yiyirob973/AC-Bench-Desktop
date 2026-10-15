@@ -451,8 +451,8 @@ def main():
         tc.append_log(res_path.with_name("track_check_log.json"), res, env_id, env)
         if res["status"] != "ok":
             sys.exit("\nStopped: the tracks are not confirmed vanilla, so ratings could be inaccurate or not comparable.\n"
-                     "  - no reference yet: run Steam > Verify integrity of game files, then create the reference\n"
-                     "    (GUI tab \"Vanilla check\" > Create reference, or ac_track_check.py create)\n"
+                     "  - the server has no reference yet: its operator must create one (GUI tab \"Vanilla check\" > Create track\n"
+                     "    reference) and load it with server.py set-env\n"
                      "  - differences listed above: remove the mods / delete extra files / verify the game files in Steam\n"
                      "  - or override with --skip-track-check (not recommended)")
         print("Tracks verified vanilla.\n", flush=True)

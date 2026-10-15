@@ -169,6 +169,40 @@ def fetch(server=None, say=print):
     return clean, "updated"
 
 
+def fetch_baseline_tracks(server=None):
+    """Operator use: the profile and track list the server publishes, WITHOUT requiring a canonical environment.
+    A brand-new server has no environment yet (that is what the reference is for), so fetch()/load() would refuse it.
+    Nothing is cached and nothing but the track list and profile is trusted. -> (profile, [track specs])."""
+    if server:
+        set_server(server)
+    url = server_url()
+    if not url:
+        raise ConditionsUnavailable("No server address set: the track list comes from the server.")
+    req = urllib.request.Request(url + "/v1/conditions", headers={"Accept": "application/json",
+                                                                   "User-Agent": "ac_bench-conditions/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise ConditionsUnavailable(f"The server answered {e.code} for /v1/conditions: cannot continue.")
+    except (urllib.error.URLError, OSError) as e:
+        raise ConditionsUnavailable(f"Could not reach the server: {getattr(e, 'reason', e)}")
+    except ValueError:
+        raise ConditionsUnavailable("The server's conditions are not valid JSON.")
+    if not isinstance(data, dict) or data.get("format") != 1:
+        raise ConditionsUnavailable("The server's conditions use an unknown format. Update the app.")
+    profile, tracks = data.get("profile"), data.get("tracks")
+    if not isinstance(profile, str) or not _NAME.match(profile):
+        raise ConditionsUnavailable("The server's conditions have an invalid profile name.")
+    if not isinstance(tracks, list) or not 1 <= len(tracks) <= 6:
+        raise ConditionsUnavailable("The server's conditions have no valid track list.")
+    for t in tracks:
+        parts = t.split("/") if isinstance(t, str) else []
+        if not 1 <= len(parts) <= 2 or not all(_NAME.match(x) for x in parts):
+            raise ConditionsUnavailable(f"The server sent an unsafe track name: {t!r}")
+    return profile, list(tracks)
+
+
 def load():
     """Last fetched conditions (clean dict). Refuses a missing, foreign or too-old cache; never invents values."""
     c = _read_cache()
