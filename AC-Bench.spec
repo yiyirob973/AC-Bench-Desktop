@@ -9,7 +9,7 @@ for required in ("template_race.ini", "bundled_car", os.path.join("apps", "lua",
 
 # the GUI starts the other scripts by re-running this exe (--ac-run <module>), so every ac_* module is embedded
 hidden = ["ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
-          "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_classify_laps",
+          "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_classify_laps",
           "ac_grid_builder", "tkinter", "tkinter.ttk", "tkinter.messagebox", "tkinter.filedialog", "tkinter.font"]
 
 a = Analysis(

@@ -79,7 +79,7 @@ jobs:
           --include-module=ac_paths --include-module=ac_lap_bench --include-module=ac_cloud `
           --include-module=ac_conditions --include-module=ac_live --include-module=ac_tag_writer `
           --include-module=ac_track_check --include-module=ac_baseline --include-module=ac_rating `
-          --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input `
+          --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input --include-module=ac_controls `
           --include-module=ac_classify_laps --include-module=ac_grid_builder `
           ac_bench_gui.py
         if ($LASTEXITCODE -ne 0) { Write-Error "Nuitka build failed"; exit 1 }

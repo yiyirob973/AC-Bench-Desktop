@@ -60,7 +60,7 @@ DEFAULTS = {
     "group_by": "",
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
-    "start_mode": "autospawn", "click_delay": 25, "press_key": "",
+    "start_mode": "hotkey", "click_delay": 25, "press_key": "",
     "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
 }
 
@@ -180,17 +180,15 @@ def bench_cmd(c, extra=()):
     if c["retry_failed"]:
         cmd.append("--retry-failed")
     mode, key = c["start_mode"], str(c["press_key"]).strip()
-    if mode == "autospawn":
-        cmd.append("--autospawn")                              # no clicking: AC skips the pre-race screen
+    if mode == "hotkey":
+        cmd += ["--start-hotkey", "--click-delay", str(c["click_delay"])]   # AC's own 'Start race' command
     elif mode == "click":
         cmd += ["--click-drive", "--click-delay", str(c["click_delay"])]
     elif mode == "key":
         key = key or "enter"
         cmd += ["--click-delay", str(c["click_delay"])]
-    if mode in ("autospawn", "click", "key") and key:      # a key press as a fallback or as the start itself
+    if mode in ("hotkey", "click", "key") and key:         # a key press as a fallback or as the start itself
         cmd += ["--press-key", key]
-        if mode == "autospawn":
-            cmd += ["--click-delay", str(c["click_delay"])]
     cmd += list(extra)
     # variable-length options go last
     if c["rerun_mode"] == "all":
@@ -454,6 +452,8 @@ def main():
     vars_ = {}
     if "start_mode" not in saved and saved.get("auto_drive"):
         saved["start_mode"] = "click"          # settings from before there were start modes: keep clicking
+    if saved.get("start_mode") == "autospawn":
+        saved["start_mode"] = "hotkey"         # that mode no longer exists
     for k, d in DEFAULTS.items():
         v = saved.get(k, d)
         if isinstance(d, bool):
@@ -957,7 +957,7 @@ def main():
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     drv = group(ts, "How each race is started")
-    modes = (("autospawn", "Skip the pre-race screen automatically (recommended: nothing is clicked)"),
+    modes = (("hotkey", "AC's own 'Start race' hotkey (recommended: set up automatically, nothing is clicked)"),
              ("click", "Click the Drive button (needs Calibrate; the position can drift)"),
              ("key", "Press a key to start"),
              ("manual", "I start each race myself (click Drive in the game)"))
@@ -980,9 +980,14 @@ def main():
 
     btn(af, "Calibrate Drive button", do_calibrate, 1, 0)
     btn(af, "Test click", lambda: run(["ac_input.py", "click"]), 1, 1, 2)
+    btn(af, "Set up start hotkey", lambda: run(["ac_controls.py", "setup", "--docs-dir", cfg()["docs_dir"],
+                                                 "--ac-dir", cfg()["ac_dir"]]), 2, 0)
+    btn(af, "Test start hotkey (AC open on the Drive screen)",
+        lambda: run(["ac_input.py", "hotkey", "--docs-dir", cfg()["docs_dir"]]), 2, 1, 2)
     ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
-        "Skipping uses the race.ini setting [AUTOSPAWN] ACTIVE=1, so AC goes straight into the race. If a race ever sits on the\n"
-        "pre-race screen, pick another mode here. Calibrate and Test click only matter for the click mode.")
+        "The hotkey is the same 'Start race' command as in Content Manager (Settings > Assetto Corsa > Controls > System). The app\n"
+        "adds it to controls.ini itself if it is missing and keeps a binding you already set. Calibrate and Test click only\n"
+        "matter for the click mode.")
               ).grid(row=len(modes) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
@@ -1528,7 +1533,7 @@ def selfcheck():
     lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
     check("ac_bench.lua" in lua and "manifest.ini" in lua, f"embedded Lua logger: {lua}")
     for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
-                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_classify_laps",
+                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_classify_laps",
                 "ac_grid_builder", "tkinter"):
         try:
             importlib.import_module(mod)

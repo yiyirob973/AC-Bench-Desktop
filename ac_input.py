@@ -6,7 +6,9 @@ Used by ac_lap_bench.py to get past the pre-race "Drive" menu automatically.
   python ac_input.py calibrate   # AC open on the Drive menu: hover the mouse over the
                                  # Drive button, press F8. Saves drive_click.json
   python ac_input.py click       # test: one click at the saved position
-  python ac_input.py key enter   # test: press a key (enter, space, esc, tab, f1-f12, a letter)
+  python ac_input.py key enter   # test: press a key (enter, space, esc, tab, f1-f24, a letter)
+  python ac_input.py combo ctrl+f12  # test: press a key combination
+  python ac_input.py hotkey      # test: AC's "Start race" hotkey from controls.ini (see ac_controls.py)
 
 The position is saved as a fraction of the AC window, so it survives resolution
 changes. Run AC windowed or borderless. Inputs go to whatever is on screen, so
@@ -18,8 +20,11 @@ from pathlib import Path
 import ac_paths  # noqa: E402
 CFG = ac_paths.DATA / "drive_click.json"
 TITLE = "Assetto Corsa"
-KEYS = {"enter": 0x0D, "space": 0x20, "esc": 0x1B, "tab": 0x09,
-        **{f"f{i}": 0x6F + i for i in range(1, 13)}}
+KEYS = {"enter": 0x0D, "space": 0x20, "esc": 0x1B, "tab": 0x09, "home": 0x24, "end": 0x23, "insert": 0x2D,
+        "delete": 0x2E, "pageup": 0x21, "pagedown": 0x22,
+        **{f"f{i}": 0x6F + i for i in range(1, 25)}}
+MODIFIERS = {"ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12}
+EXTENDED = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E}   # keys that need the extended-key flag
 
 try:
     import ctypes
@@ -91,6 +96,39 @@ def press_key(hwnd, name):
     user32.keybd_event(vk, scan, 2, 0)
 
 
+def key_code(name):
+    """Virtual-key code for a name (enter, f12, a, ctrl, ...) or a number (0x7B / 123)."""
+    name = name.strip().lower()
+    if name in MODIFIERS:
+        return MODIFIERS[name]
+    if name in KEYS:
+        return KEYS[name]
+    if len(name) == 1 and name.isalnum():
+        return ord(name.upper())
+    try:
+        return int(name, 0)
+    except ValueError:
+        raise ValueError(f"Unknown key '{name}'")
+
+
+def _key_event(vk, up=False):
+    scan = user32.MapVirtualKeyW(vk, 0)
+    flags = (1 if vk in EXTENDED else 0) | (2 if up else 0)
+    user32.keybd_event(vk, scan, flags, 0)
+
+
+def press_combo(hwnd, vks):
+    """Hold the modifiers, tap the last key, release in reverse order: what a person pressing Ctrl+F12 does."""
+    focus(hwnd)
+    for vk in vks:
+        _key_event(vk)
+        time.sleep(0.05)
+    time.sleep(0.12)
+    for vk in reversed(vks):
+        _key_event(vk, up=True)
+        time.sleep(0.03)
+
+
 def load_click():
     try:
         d = json.loads(CFG.read_text(encoding="utf-8"))
@@ -99,8 +137,9 @@ def load_click():
         return None
 
 
-def nudge(click_pos=None, key=None):
-    """One start attempt: click and/or press a key in the AC window. False if no window."""
+def nudge(click_pos=None, key=None, combo=None):
+    """One start attempt: click, press a key and/or a key combination (list of virtual-key codes, modifiers first)
+    in the AC window. False if no window."""
     hwnd = find_window()
     if not hwnd:
         return False
@@ -108,6 +147,8 @@ def nudge(click_pos=None, key=None):
         click_fraction(hwnd, *click_pos)
     if key:
         press_key(hwnd, key)
+    if combo:
+        press_combo(hwnd, combo)
     return True
 
 
@@ -155,6 +196,21 @@ def main():
             return 0
         if cmd == "key" and len(sys.argv) > 2:
             print("Sent." if nudge(None, sys.argv[2]) else f"No '{TITLE}' window found.")
+            return 0
+        if cmd == "combo" and len(sys.argv) > 2:      # python ac_input.py combo ctrl+f12
+            combo = [key_code(x) for x in sys.argv[2].split("+")]
+            print("Sent." if nudge(None, None, combo) else f"No '{TITLE}' window found.")
+            return 0
+        if cmd == "hotkey":                            # the AC 'Start race' hotkey from controls.ini
+            import ac_controls
+            docs = sys.argv[sys.argv.index("--docs-dir") + 1] if "--docs-dir" in sys.argv else str(
+                Path.home() / "Documents" / "Assetto Corsa")
+            vk, note = ac_controls.ensure_start_hotkey(docs)
+            print(note)
+            if vk is None:
+                return 1
+            print("Sent Ctrl+%s." % ac_controls.vk_name(vk) if nudge(None, None, [0x11, vk])
+                  else f"No '{TITLE}' window found. Open AC (on the Drive screen) first.")
             return 0
     except Exception as e:
         print("Error:", e)

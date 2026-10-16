@@ -127,14 +127,6 @@ def apply_batch(cp, base_car, batch, spec, laps):
         cp["ASSISTS"].update(bl.ASSISTS)
 
 
-def enable_autospawn(cp):
-    """race.ini [AUTOSPAWN] ACTIVE=1: AC starts the session by itself instead of waiting on the pre-race "Drive"
-    screen, so nothing has to be clicked."""
-    if "AUTOSPAWN" not in cp:
-        cp.add_section("AUTOSPAWN")
-    cp["AUTOSPAWN"]["ACTIVE"] = "1"
-
-
 def kill_ac(proc):
     try:
         proc.kill()
@@ -221,7 +213,7 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
                 if now - start > args.click_delay and now - last_try > args.click_interval:
                     last_try, attempts = now, attempts + 1
                     try:
-                        found = args.auto[0](args.auto[1], args.auto[2])
+                        found = args.auto[0](args.auto[1], args.auto[2], args.auto[3])
                     except Exception as e:
                         found = False
                         print(f"    auto-start error: {e}", flush=True)
@@ -311,8 +303,9 @@ def main():
                     help="redo cars that already have results: all selected cars, or only the ids given")
     ap.add_argument("--probe", nargs="+", metavar="CAR_ID", help="test run: these cars as one batch on every track (always runs, even if already rated)")
     ap.add_argument("--dry-run", action="store_true", help="only count jobs")
-    ap.add_argument("--autospawn", action="store_true",
-                    help="start races without the pre-race Drive screen ([AUTOSPAWN] ACTIVE=1 in race.ini): no clicking")
+    ap.add_argument("--start-hotkey", action="store_true",
+                    help="start races with AC's own 'Start race' hotkey (controls.ini [__CM_START_SESSION]; set up "
+                         "automatically): no clicking and no calibration")
     ap.add_argument("--click-drive", action="store_true",
                     help="auto-click the Drive button at the position saved by ac_input.py calibrate")
     ap.add_argument("--click-pos", help="fx,fy (0-1 fractions of the AC window) instead of drive_click.json")
@@ -344,27 +337,34 @@ def main():
         sys.exit(f"Logger app missing: copy ac_bench to {result_file.parent}")
 
     args.auto = None
-    if args.click_drive or args.press_key:
+    if args.click_drive or args.press_key or args.start_hotkey:
         try:
             import ac_input
         except Exception as e:
             sys.exit(f"Auto-start unavailable: {e}")
+        combo = None
+        if args.start_hotkey:
+            import ac_controls
+            vk, note = ac_controls.ensure_start_hotkey(args.docs_dir)
+            print("start mode: AC 'Start race' hotkey: " + note, flush=True)
+            if vk is None:
+                sys.exit("Cannot use the start-race hotkey: " + note)
+            for line in ac_controls.describe(args.docs_dir, str(ac))[1:]:
+                print("    " + line, flush=True)
+            combo = [ac_input.key_code("ctrl"), vk]
         pos = None
         if args.click_drive:
             pos = (tuple(float(v) for v in args.click_pos.split(",")) if args.click_pos
                    else ac_input.load_click())
             if not pos:
                 sys.exit("No Drive position saved. Run: python ac_input.py calibrate")
-        args.auto = (ac_input.nudge, pos, args.press_key)
+        args.auto = (ac_input.nudge, pos, args.press_key, combo)
 
     cp = read_ini(args.template)
     for sec in ("RACE", "CAR_1"):
         if sec not in cp:
             sys.exit(f"Template race.ini has no [{sec}]. Use a quick drive race with 1 AI opponent.")
     base_car = dict(cp["CAR_1"])
-    if args.autospawn:
-        enable_autospawn(cp)
-        print("start mode: [AUTOSPAWN] ACTIVE=1 in race.ini: AC skips the pre-race screen, nothing is clicked", flush=True)
 
     cars = sorted(d for d in (ac / "content" / "cars").iterdir() if d.is_dir())
     if args.probe:

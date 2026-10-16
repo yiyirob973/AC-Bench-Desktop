@@ -191,15 +191,20 @@ device gets its own key for the same account, saved in its own `cloud_config.jso
 
 AC shows a pre-race "Drive" screen that has to be passed before the AI race begins. Setup > **How each race is started**:
 
-- **Skip the pre-race screen automatically** (default, recommended): the app sets `[AUTOSPAWN] ACTIVE=1` in the race.ini it
-  writes for each launch, so AC goes straight into the race. Nothing is clicked, so a moved window or a different
-  resolution cannot break it.
+- **AC's own "Start race" hotkey** (default, recommended): the same command as Content Manager > Settings > Assetto Corsa >
+  Controls > System > Race > *Start race*. It is stored in `Documents\Assetto Corsa\cfg\controls.ini` as
+  `[__CM_START_SESSION]` / `KEY=<virtual-key code>` and the hotkey is Ctrl + that key. The app adds the entry itself
+  (default Ctrl+F12) if it is missing, changing only that one line and keeping a backup (`controls.ini.acbench.bak`);
+  a binding you already set is kept and used. It then presses the combination in the AC window until the race starts.
+  No clicking, no calibration. Custom Shaders Patch must handle this hotkey inside the game: the log (and
+  `ac_controls.py status`) says whether `extension\config\data_hotkeys_supported.txt` lists `__CM_START_SESSION`.
+  *Test start hotkey* on the Setup tab presses it once (open AC on the Drive screen first).
 - **Click the Drive button**: the old method (Calibrate once; the click position is a fraction of the AC window).
 - **Press a key**: sends the key (default Enter) after the delay.
 - **I start each race myself**: the app only launches AC.
 
 The key box also works as a fallback in the first two modes: if the race has not started after the delay, that key is
-pressed. Settings saved by an older version that used auto-click keep using the click mode.
+pressed too. Settings saved by an older version that used auto-click keep using the click mode.
 
 Job processes (benchmark, upload, ...) always write UTF-8, so car names with special characters can no longer crash an
 upload or show up garbled in the log.
