@@ -60,7 +60,7 @@ DEFAULTS = {
     "group_by": "",
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
-    "auto_drive": False, "click_delay": 25, "press_key": "",
+    "start_mode": "autospawn", "click_delay": 25, "press_key": "",
     "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
 }
 
@@ -179,10 +179,18 @@ def bench_cmd(c, extra=()):
         cmd += ["--exclude", ex]
     if c["retry_failed"]:
         cmd.append("--retry-failed")
-    if c["auto_drive"]:
+    mode, key = c["start_mode"], str(c["press_key"]).strip()
+    if mode == "autospawn":
+        cmd.append("--autospawn")                              # no clicking: AC skips the pre-race screen
+    elif mode == "click":
         cmd += ["--click-drive", "--click-delay", str(c["click_delay"])]
-    if c["auto_drive"] and str(c["press_key"]).strip():
-        cmd += ["--press-key", str(c["press_key"]).strip()]
+    elif mode == "key":
+        key = key or "enter"
+        cmd += ["--click-delay", str(c["click_delay"])]
+    if mode in ("autospawn", "click", "key") and key:      # a key press as a fallback or as the start itself
+        cmd += ["--press-key", key]
+        if mode == "autospawn":
+            cmd += ["--click-delay", str(c["click_delay"])]
     cmd += list(extra)
     # variable-length options go last
     if c["rerun_mode"] == "all":
@@ -444,6 +452,8 @@ def main():
         except Exception:
             pass
     vars_ = {}
+    if "start_mode" not in saved and saved.get("auto_drive"):
+        saved["start_mode"] = "click"          # settings from before there were start modes: keep clicking
     for k, d in DEFAULTS.items():
         v = saved.get(k, d)
         if isinstance(d, bool):
@@ -946,15 +956,20 @@ def main():
         "Each device gets its own key for the same account; the code works once and expires after 10 minutes.")
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-    drv = group(ts, "Optional: auto-click the Drive button")
+    drv = group(ts, "How each race is started")
+    modes = (("autospawn", "Skip the pre-race screen automatically (recommended: nothing is clicked)"),
+             ("click", "Click the Drive button (needs Calibrate; the position can drift)"),
+             ("key", "Press a key to start"),
+             ("manual", "I start each race myself (click Drive in the game)"))
+    for i, (value, text) in enumerate(modes):
+        ttk.Radiobutton(drv, text=text, value=value, variable=vars_["start_mode"]).grid(
+            row=i, column=0, columnspan=3, sticky="w", padx=4, pady=1)
     af = ttk.Frame(drv)
-    af.grid(row=0, column=0, columnspan=3, sticky="w")
-    ttk.Checkbutton(af, text="Auto-click the Drive button (bypass the Drive menu)",
-                    variable=vars_["auto_drive"]).grid(row=0, column=0, sticky="w")
-    ttk.Label(af, text="first try after (s)").grid(row=0, column=1, padx=(14, 4))
-    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["click_delay"]).grid(row=0, column=2)
-    ttk.Label(af, text="also press key").grid(row=0, column=3, padx=(14, 4))
-    ttk.Entry(af, textvariable=vars_["press_key"], width=8).grid(row=0, column=4)
+    af.grid(row=len(modes), column=0, columnspan=3, sticky="w", pady=(6, 0))
+    ttk.Label(af, text="first try after (s)").grid(row=0, column=0, padx=(4, 4))
+    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["click_delay"]).grid(row=0, column=1)
+    ttk.Label(af, text="key (to press, or as a fallback)").grid(row=0, column=2, padx=(14, 4))
+    ttk.Entry(af, textvariable=vars_["press_key"], width=8).grid(row=0, column=3)
 
     def do_calibrate():
         messagebox.showinfo("Calibrate Drive button",
@@ -965,6 +980,10 @@ def main():
 
     btn(af, "Calibrate Drive button", do_calibrate, 1, 0)
     btn(af, "Test click", lambda: run(["ac_input.py", "click"]), 1, 1, 2)
+    ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
+        "Skipping uses the race.ini setting [AUTOSPAWN] ACTIVE=1, so AC goes straight into the race. If a race ever sits on the\n"
+        "pre-race screen, pick another mode here. Calibrate and Test click only matter for the click mode.")
+              ).grid(row=len(modes) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
     ttk.Label(tgs, justify="left", style="Muted.TLabel", text=(
@@ -1445,7 +1464,7 @@ def script_command(cmd):
 
 def script_env():
     # the job processes must keep their settings and results in the same folder as this window
-    env = dict(os.environ, PYTHONUNBUFFERED="1", AC_BENCH_DATA=str(ac_paths.DATA))
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1", AC_BENCH_DATA=str(ac_paths.DATA))
     if ac_paths.FROZEN and hasattr(sys, "_MEIPASS"):
         # a PyInstaller one-file exe starting itself as an independent process must unpack its own copy of the embedded files
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
@@ -1461,6 +1480,7 @@ def run_embedded_script(argv):
                 setattr(sys, name, open(fd, "w", encoding="utf-8", buffering=1, closefd=False))
             except OSError:
                 setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+    ac_paths.utf8_output()      # after the stream repair above: the log reads UTF-8
     script, rest = argv[0], argv[1:]
     sys.argv = [script, *rest]
     name = Path(script).stem

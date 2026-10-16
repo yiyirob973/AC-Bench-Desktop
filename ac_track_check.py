@@ -267,6 +267,7 @@ def append_log(path, result, env_id=None, env=None):
 
 
 def main():
+    ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description="Vanilla track check against the server's environment")
     ap.add_argument("action", choices=["verify", "create"])
     ap.add_argument("--ac-dir", required=True)

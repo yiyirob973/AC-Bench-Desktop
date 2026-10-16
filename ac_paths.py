@@ -61,6 +61,21 @@ RES = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)
 DATA = _data_dir()
 
 
+def utf8_output():
+    """Make this process write UTF-8 (never fail on a character): the app reads every job's output as UTF-8, but
+    Windows gives a piped child the console code page (cp1252), which cannot hold car names such as 'Golf Mk\u2076'."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")          # a real console keeps its own encoding
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def app_executable():
     """The program to start again for a job (the app runs its jobs as copies of itself in a packaged build).
     sys.executable is not reliable in a one-file build (it can name a file that does not exist), so ask Windows for the

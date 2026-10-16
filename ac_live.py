@@ -191,6 +191,7 @@ def cmd_tag(args):
 
 
 def main():
+    ac_paths.utf8_output()
     import argparse
     ap = argparse.ArgumentParser(description="Live server data for the cars installed on this PC.")
     sub = ap.add_subparsers(dest="command", required=True)

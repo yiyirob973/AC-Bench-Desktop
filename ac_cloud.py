@@ -345,6 +345,7 @@ def cmd_sync(args):
 
 
 def main():
+    ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description="AC Bench cloud client")
     ap.add_argument("--server", help="server address, e.g. https://acbench.example.org")
     sub = ap.add_subparsers(dest="command", required=True)

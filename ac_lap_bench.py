@@ -127,6 +127,14 @@ def apply_batch(cp, base_car, batch, spec, laps):
         cp["ASSISTS"].update(bl.ASSISTS)
 
 
+def enable_autospawn(cp):
+    """race.ini [AUTOSPAWN] ACTIVE=1: AC starts the session by itself instead of waiting on the pre-race "Drive"
+    screen, so nothing has to be clicked."""
+    if "AUTOSPAWN" not in cp:
+        cp.add_section("AUTOSPAWN")
+    cp["AUTOSPAWN"]["ACTIVE"] = "1"
+
+
 def kill_ac(proc):
     try:
         proc.kill()
@@ -207,7 +215,8 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
             if not warned and not result_file.exists() and now - start > 120:
                 warned = True
                 print("    note: the in-game logger has not reported yet. Open the \"AC Bench\" app in the "
-                      "apps sidebar and check its status, or see custom_shaders_patch.log for lines with ac_bench.", flush=True)
+                      "apps sidebar and check its status, or see custom_shaders_patch.log for lines with ac_bench. If AC is "
+                      "sitting on the pre-race screen, change how races are started (Setup tab).", flush=True)
             if args.auto and not started and attempts < args.click_max:
                 if now - start > args.click_delay and now - last_try > args.click_interval:
                     last_try, attempts = now, attempts + 1
@@ -277,6 +286,7 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
 
 
 def main():
+    ac_paths.utf8_output()
     ap = argparse.ArgumentParser()
     ap.add_argument("--ac-dir", default=DEFAULT_AC)
     ap.add_argument("--docs-dir", default=str(Path.home() / "Documents" / "Assetto Corsa"))
@@ -301,6 +311,8 @@ def main():
                     help="redo cars that already have results: all selected cars, or only the ids given")
     ap.add_argument("--probe", nargs="+", metavar="CAR_ID", help="test run: these cars as one batch on every track (always runs, even if already rated)")
     ap.add_argument("--dry-run", action="store_true", help="only count jobs")
+    ap.add_argument("--autospawn", action="store_true",
+                    help="start races without the pre-race Drive screen ([AUTOSPAWN] ACTIVE=1 in race.ini): no clicking")
     ap.add_argument("--click-drive", action="store_true",
                     help="auto-click the Drive button at the position saved by ac_input.py calibrate")
     ap.add_argument("--click-pos", help="fx,fy (0-1 fractions of the AC window) instead of drive_click.json")
@@ -350,6 +362,9 @@ def main():
         if sec not in cp:
             sys.exit(f"Template race.ini has no [{sec}]. Use a quick drive race with 1 AI opponent.")
     base_car = dict(cp["CAR_1"])
+    if args.autospawn:
+        enable_autospawn(cp)
+        print("start mode: [AUTOSPAWN] ACTIVE=1 in race.ini: AC skips the pre-race screen, nothing is clicked", flush=True)
 
     cars = sorted(d for d in (ac / "content" / "cars").iterdir() if d.is_dir())
     if args.probe:

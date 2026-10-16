@@ -186,3 +186,20 @@ On the device that is already registered: Setup > **Create link code for another
 `python ac_cloud.py link`). On the new device: Setup > **Use the same account on another device**, enter the code and
 press **Sign in** (or `python ac_cloud.py login --code=XXXX-XXXX-XXXX`). The code works once and for 10 minutes; each
 device gets its own key for the same account, saved in its own `cloud_config.json`.
+
+## How each race is started
+
+AC shows a pre-race "Drive" screen that has to be passed before the AI race begins. Setup > **How each race is started**:
+
+- **Skip the pre-race screen automatically** (default, recommended): the app sets `[AUTOSPAWN] ACTIVE=1` in the race.ini it
+  writes for each launch, so AC goes straight into the race. Nothing is clicked, so a moved window or a different
+  resolution cannot break it.
+- **Click the Drive button**: the old method (Calibrate once; the click position is a fraction of the AC window).
+- **Press a key**: sends the key (default Enter) after the delay.
+- **I start each race myself**: the app only launches AC.
+
+The key box also works as a fallback in the first two modes: if the race has not started after the delay, that key is
+pressed. Settings saved by an older version that used auto-click keep using the click mode.
+
+Job processes (benchmark, upload, ...) always write UTF-8, so car names with special characters can no longer crash an
+upload or show up garbled in the log.

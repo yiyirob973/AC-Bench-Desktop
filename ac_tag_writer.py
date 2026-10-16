@@ -14,6 +14,7 @@ Without --apply it is a dry run. Duplicate protection:
   * a file is only rewritten when its tag list actually changes, and written atomically;
   * the first backup (ui_car.json.gridbak) is never overwritten, so --restore always returns the ORIGINAL file.
 """
+import ac_paths
 import argparse, csv, json, os, re, sys, tempfile
 from pathlib import Path
 
@@ -87,6 +88,7 @@ def restore(cars_dir):
 
 def main(argv=None, labels=None):
     """labels: {car id: class} supplied by the caller (ac_live.py tag); then no classes CSV is needed."""
+    ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cars_dir")
     ap.add_argument("classes", nargs="?")

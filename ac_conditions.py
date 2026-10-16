@@ -239,6 +239,7 @@ def summary(d):
 
 
 def main():
+    ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description="Benchmark conditions from the server")
     sub = ap.add_subparsers(dest="command", required=True)
     f = sub.add_parser("fetch")
