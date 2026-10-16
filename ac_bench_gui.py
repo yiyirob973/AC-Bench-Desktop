@@ -881,9 +881,11 @@ def main():
     sb.grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 0))
     pbtn(sb, "Test connection", lambda: do_cloud("ping"))
     pbtn(sb, "Register", lambda: do_cloud("register"))
+    pbtn(sb, "Create link code for another device", lambda: do_link_code())
     ttk.Label(sg, justify="left", style="Muted.TLabel", text=(
-        "Register once with the invite code you were given. Uploading results is step 3, on the Benchmark tab; the\n"
-        "class tags are applied on the Cars & ratings tab.")
+        "Register once with the invite code you were given. Already registered on another PC? Press 'Create link code'\n"
+        "there, then enter the code under 'Use the same account on another device' just below and press Sign in.\n"
+        "Uploading results is step 3, on the Benchmark tab; the class tags are applied on the Cars & ratings tab.")
               ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # ---- the same account on another device
@@ -939,9 +941,8 @@ def main():
     dvb = ttk.Frame(dv)
     dvb.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
     pbtn(dvb, "Sign in with link code", lambda: do_cloud("login"), accent=True)
-    pbtn(dvb, "Create link code for another device", do_link_code)
     ttk.Label(dv, justify="left", style="Muted.TLabel", text=(
-        "Already registered on another PC? Press 'Create link code' there, then enter the code here and press Sign in.\n"
+        "To get a code, press 'Create link code for another device' next to Register on a device that is already signed in.\n"
         "Each device gets its own key for the same account; the code works once and expires after 10 minutes.")
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
@@ -1368,7 +1369,7 @@ def main():
         elif not c["cloud_url"].strip():
             nxt = "Next: enter the server address"
         elif not registered:
-            nxt = "Next: enter your name and invite code, then press Register"
+            nxt = "Next: enter your name and invite code and press Register (or sign in with a link code from another device)"
         else:
             nxt = "Setup is complete. Next: step 2, Vanilla check"
         next_step.set(nxt)
