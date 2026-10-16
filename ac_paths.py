@@ -61,9 +61,29 @@ RES = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)
 DATA = _data_dir()
 
 
+def app_executable():
+    """The program to start again for a job (the app runs its jobs as copies of itself in a packaged build).
+    sys.executable is not reliable in a one-file build (it can name a file that does not exist), so ask Windows for the
+    image of the running process first, then fall back to sys.executable and the path the user started."""
+    candidates = []
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetModuleFileNameW(None, buf, len(buf)):
+                candidates.append(buf.value)
+        except Exception:
+            pass
+    candidates += [sys.executable, sys.argv[0] if sys.argv else ""]
+    for c in candidates:
+        if c and Path(c).is_file():
+            return str(Path(c).resolve())
+    return sys.executable
+
+
 def main():
     """python ac_paths.py (or the exe with --ac-run ac_paths.py): show where this build looks for its files."""
-    print("frozen=%s\nRES=%s\nDATA=%s" % (FROZEN, RES, DATA))
+    print("frozen=%s\nRES=%s\nDATA=%s\nEXE=%s" % (FROZEN, RES, DATA, app_executable()))
 
 
 def data(name):

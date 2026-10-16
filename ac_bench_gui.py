@@ -563,7 +563,7 @@ def main():
                                     stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                     errors="replace", creationflags=flags, env=script_env())
         except Exception as e:
-            messagebox.showerror("Could not start", str(e))
+            messagebox.showerror("Could not start", f"{script_command(cmd)[0]}\n\n{e}")
             return
         state.update(proc=proc, graceful=graceful, on_done=on_done)
         set_busy(True)
@@ -1438,7 +1438,7 @@ def script_command(cmd):
     From source that is python -u script.py. In the single exe there are no script files: the exe starts itself
     with --ac-run and runs the embedded module (see run_embedded_script)."""
     if ac_paths.FROZEN:
-        return [sys.executable, "--ac-run", *cmd]
+        return [ac_paths.app_executable(), "--ac-run", *cmd]
     return [sys.executable, "-u", *cmd]
 
 
@@ -1518,6 +1518,14 @@ def selfcheck():
             ok = False
             print("      " + type(e).__name__ + ": " + str(e))
         check(ok, f"module {mod}")
+    try:      # start a job the way the buttons do (the app running a copy of itself) and read its output
+        job = subprocess.run(script_command(["ac_paths.py"]), cwd=HERE, capture_output=True, text=True, timeout=120,
+                             env=script_env(), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        check(job.returncode == 0 and "DATA=" in job.stdout,
+              f"the app can start a job from inside itself: {script_command(['ac_paths.py'])[0]}"
+              + ("" if job.returncode == 0 else f" (exit {job.returncode}: {(job.stderr or job.stdout).strip()[:200]})"))
+    except Exception as e:
+        check(False, f"the app cannot start a job from inside itself: {type(e).__name__}: {e}")
     try:
         probe = HERE / ".selfcheck"
         probe.write_text("x", encoding="utf-8")
