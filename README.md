@@ -164,10 +164,14 @@ PyInstaller output is flagged by many antivirus products because every PyInstall
 widely known bootloader. The GitHub workflow `.github/workflows/build.yml` therefore uses **Nuitka**, which compiles the
 code to C and produces a native program:
 
-- Default: a folder, zipped as `AC-Bench-Portable.zip` (with a `.sha256`). Unzip anywhere and run `AC-Bench.exe`;
-  settings and results are written next to it, so the folder is portable.
-- Start the workflow by hand with **onefile** ticked for a single `AC-Bench.exe` (self-extracting programs are flagged
-  more often).
+- Default: **one file, `AC-Bench.exe`**. Every push to `dev` publishes it to the rolling `dev-latest` GitHub Release
+  (direct download, with a `.sha256`); the Actions artifact holds the same file (GitHub always wraps artifacts in a zip).
+- **Portable:** nothing is installed and nothing is left behind. While it runs the exe unpacks itself into a temporary
+  folder and deletes that folder when it closes; settings, results and caches are written next to the exe. Move or copy
+  the exe (with its settings files) anywhere, for example a USB stick. Only if the exe's folder is read-only does the app
+  use `%LOCALAPPDATA%\AC-Bench` instead. No Python-based program can run from a single file without unpacking itself
+  while it runs: that is what makes it one file.
+- Start the workflow by hand with **folder** ticked for a folder build instead (debugging only).
 - The old PyInstaller build is kept as `build-pyinstaller.yml` (manual start only).
 - Every build self-checks the finished program (`--ac-selfcheck`: embedded template, car and Lua logger present, all
   modules importable) and starts a job through `--ac-run` before the artifact is uploaded.

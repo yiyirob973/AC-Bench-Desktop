@@ -1443,7 +1443,8 @@ def script_command(cmd):
 
 
 def script_env():
-    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    # the job processes must keep their settings and results in the same folder as this window
+    env = dict(os.environ, PYTHONUNBUFFERED="1", AC_BENCH_DATA=str(ac_paths.DATA))
     if ac_paths.FROZEN and hasattr(sys, "_MEIPASS"):
         # a PyInstaller one-file exe starting itself as an independent process must unpack its own copy of the embedded files
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"

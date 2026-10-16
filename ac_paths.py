@@ -35,10 +35,17 @@ def _exe_folder():
     containing = getattr(compiled, "containing_dir", None)
     if containing:
         return Path(containing).resolve()
+    if compiled is not None and sys.argv and sys.argv[0]:     # Nuitka: argv[0] is the exe the user started
+        started = Path(sys.argv[0])
+        if started.is_absolute() and started.is_file():
+            return started.resolve().parent
     return Path(sys.executable).resolve().parent
 
 
 def _data_dir():
+    forced = os.environ.get("AC_BENCH_DATA")    # set by the app for the job processes it starts: same folder as the window
+    if forced and Path(forced).is_dir():
+        return Path(forced).resolve()
     if not FROZEN:
         return Path(__file__).resolve().parent
     beside_exe = _exe_folder()
@@ -54,6 +61,11 @@ RES = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)
 DATA = _data_dir()
 
 
+def main():
+    """python ac_paths.py (or the exe with --ac-run ac_paths.py): show where this build looks for its files."""
+    print("frozen=%s\nRES=%s\nDATA=%s" % (FROZEN, RES, DATA))
+
+
 def data(name):
     """A file or folder that belongs to the user (settings, results, caches)."""
     return DATA / name
@@ -62,3 +74,7 @@ def data(name):
 def res(*parts):
     """A file or folder shipped inside the app (template, bundled car, Lua logger)."""
     return RES.joinpath(*parts)
+
+
+if __name__ == "__main__":
+    main()

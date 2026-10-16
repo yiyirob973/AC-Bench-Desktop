@@ -1,18 +1,23 @@
-name: Build Portable App (Nuitka)
+name: Build Portable Executable (Nuitka)
 
-# Nuitka compiles the Python code to C and builds a native program, so the result does not carry the PyInstaller
-# bootloader that antivirus products recognise and flag. The default output is a folder (zipped): run AC-Bench.exe
-# inside it, and settings and results are written next to it. Start the workflow by hand with "onefile" ticked
-# to get a single exe instead (self-extracting builds are flagged more often).
+# Builds ONE file, AC-Bench.exe, that needs no installation and leaves nothing behind: it unpacks into a temporary
+# folder while it runs, deletes it on exit, and keeps settings and results next to itself. Nuitka compiles the Python code to C and builds a native program, so the result does
+# not carry the PyInstaller bootloader that antivirus products recognise and flag. On every push to dev the exe is
+# also attached to the rolling "dev-latest" GitHub Release, so it can be downloaded directly (an Actions artifact is
+# always wrapped in a zip by GitHub). Settings and results are written next to the exe.
+# Start the workflow by hand with "folder" ticked to build a folder instead (only useful for debugging).
 on:
   push:
     branches: [ dev ]
   workflow_dispatch:
     inputs:
-      onefile:
-        description: 'Build a single exe instead of a folder'
+      folder:
+        description: 'Build a folder instead of a single exe (debugging only)'
         type: boolean
         default: false
+
+permissions:
+  contents: write      # lets the job publish the exe to the dev-latest release
 
 jobs:
   build:
@@ -50,10 +55,13 @@ jobs:
     - name: Build with Nuitka
       shell: pwsh
       env:
-        ONEFILE: ${{ inputs.onefile }}
+        FOLDER: ${{ inputs.folder }}
       run: |
-        $mode = if ($env:ONEFILE -eq 'true') { '--onefile' } else { '--standalone' }
-        python -m nuitka $mode `
+        # single exe by default. It unpacks into a temporary folder while it runs and deletes it when it closes
+        # (Nuitka's default), so nothing is left on the PC: the only files that stay are the ones beside the exe.
+        if ($env:FOLDER -eq 'true') { $mode = @('--standalone') }
+        else { $mode = @('--onefile') }
+        python -m nuitka @mode `
           --msvc=latest `
           --assume-yes-for-downloads `
           --enable-plugin=tk-inter `
@@ -75,7 +83,7 @@ jobs:
           --include-module=ac_classify_laps --include-module=ac_grid_builder `
           ac_bench_gui.py
         if ($LASTEXITCODE -ne 0) { Write-Error "Nuitka build failed"; exit 1 }
-        $exe = if ($env:ONEFILE -eq 'true') { 'build\AC-Bench.exe' } else { 'build\ac_bench_gui.dist\AC-Bench.exe' }
+        $exe = if ($env:FOLDER -eq 'true') { 'build\ac_bench_gui.dist\AC-Bench.exe' } else { 'build\AC-Bench.exe' }
         if (-not (Test-Path $exe)) { Write-Error "Expected $exe was not produced"; exit 1 }
         "APP_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -89,6 +97,12 @@ jobs:
         Get-Content selfcheck_out.txt
         Get-Content selfcheck_err.txt
         if ($p.ExitCode -ne 0) { Write-Error "Self-check failed (exit $($p.ExitCode))"; exit 1 }
+        # settings and results must live next to the exe (portable), not in the temporary unpack folder
+        $exeDir = Split-Path -Parent (Resolve-Path $env:APP_EXE).Path
+        if (-not (Select-String -Path selfcheck_out.txt -SimpleMatch -Pattern $exeDir -Quiet)) {
+          Write-Error "The app's data folder is not the folder of the exe ($exeDir): see the self-check output above"
+          exit 1
+        }
 
     # Runs one of the job modules the way the app does (the program starting itself with --ac-run)
     - name: Smoke-test starting a job
@@ -101,6 +115,23 @@ jobs:
         Get-Content job_err.txt
         if ($p.ExitCode -ne 0 -or -not (Select-String -Path job_out.txt -Pattern "usage")) {
           Write-Error "Starting a job from the app failed (exit $($p.ExitCode))"
+          exit 1
+        }
+
+    # a job process started by the app is told which folder holds the settings and results (AC_BENCH_DATA)
+    - name: Smoke-test the data folder given to jobs
+      shell: pwsh
+      run: |
+        $d = Join-Path $env:RUNNER_TEMP "acbench-data"
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        $env:AC_BENCH_DATA = $d
+        $p = Start-Process -FilePath $env:APP_EXE -ArgumentList "--ac-run", "ac_paths.py" -Wait -PassThru `
+             -RedirectStandardOutput paths_out.txt -RedirectStandardError paths_err.txt
+        $p.WaitForExit()
+        Get-Content paths_out.txt
+        Get-Content paths_err.txt
+        if ($p.ExitCode -ne 0 -or -not (Select-String -Path paths_out.txt -SimpleMatch -Pattern "DATA=$d" -Quiet)) {
+          Write-Error "A job did not use the data folder it was given"
           exit 1
         }
 
@@ -118,6 +149,18 @@ jobs:
           "$h  $($_.Name)" | Out-File -FilePath "$($_.FullName).sha256" -Encoding ascii
         }
         Get-ChildItem package
+
+    # a direct download of AC-Bench.exe (the newest dev build replaces the previous one)
+    - name: Publish to the dev-latest release
+      if: github.event_name == 'push'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release delete dev-latest --yes --cleanup-tag 2>$null
+        gh release create dev-latest (Get-ChildItem package).FullName --prerelease --target ${{ github.sha }} `
+          --title "Latest dev build" --notes "AC-Bench.exe built from commit ${{ github.sha }}. SHA-256 is in the .sha256 file."
+        if ($LASTEXITCODE -ne 0) { Write-Error "Publishing the release failed"; exit 1 }
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
