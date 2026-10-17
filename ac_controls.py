@@ -29,7 +29,11 @@ SECTION = "__CM_START_SESSION"
 DEFAULT_VK = 0x7B            # F12: not a toggle key, nothing else in AC needs Ctrl+F12
 BACKUP_NAME = "controls.ini.acbench.bak"
 _HEADER = re.compile(r"^\s*\[([^\]]*)\]\s*$")
-_KEY = re.compile(r"^\s*KEY\s*=\s*(-?\d+)\s*(;.*)?$", re.IGNORECASE)
+# Content Manager writes the key as hexadecimal followed by the key's name, e.g.  KEY=0x4F ; O   (older/other tools: KEY=79)
+_KEY = re.compile(r"^\s*KEY\s*=\s*(-?(?:0[xX][0-9A-Fa-f]+|\d+))\s*(?:[;#].*)?$", re.IGNORECASE)
+# Ctrl + these letters are shortcuts built into AC itself (ABS, TC, hide apps, restart session, names, mouse steering, auto
+# gearbox, racing line, replay, slow motion, virtual desktops): pressing one would also trigger that, so we do not use them
+CONFLICTS = {ord(c) for c in "ATHOLMGIRSU"}
 
 _NAMES = {0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc", 0x20: "Space", 0x21: "Page Up", 0x22: "Page Down",
           0x23: "End", 0x24: "Home", 0x2D: "Insert", 0x2E: "Delete", 0x13: "Pause", 0x91: "Scroll Lock"}
@@ -67,13 +71,28 @@ def _find_section(lines, name):
     return (start, len(lines)) if start is not None else None
 
 
-def _find_key(lines, start, end):
-    """(line index, value) of KEY= inside the section, or None."""
+def _to_int(text):
+    return int(text, 16) if text.lower().lstrip("-").startswith("0x") else int(text)
+
+
+def _find_keys(lines, start, end):
+    """[(line index, value)] of every KEY= line inside the section (decimal or 0x hex, optional comment)."""
+    out = []
     for i in range(start + 1, end):
         m = _KEY.match(lines[i].rstrip("\r"))
         if m:
-            return i, int(m.group(1))
-    return None
+            out.append((i, _to_int(m.group(1))))
+    return out
+
+
+def _effective(keys):
+    """The key that counts: with duplicate KEY lines the last valid one wins, as in any ini reader."""
+    good = [v for _, v in keys if v > 0]
+    return good[-1] if good else None
+
+
+def _canonical(vk):
+    return "KEY=0x%02X ; %s" % (vk, vk_name(vk))      # the way Content Manager writes it
 
 
 def read_start_hotkey(docs_dir):
@@ -87,14 +106,17 @@ def read_start_hotkey(docs_dir):
     sec = _find_section(lines, SECTION)
     if not sec:
         return None
-    found = _find_key(lines, *sec)
-    return found[1] if found and found[1] > 0 else None
+    return _effective(_find_keys(lines, *sec))
 
 
 def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
-    """Make sure 'Start race' has a key in controls.ini. A binding that is already there is left alone.
-    Only the one line is added or changed; the rest of the file is kept byte for byte, and a backup of the original is
-    saved once as controls.ini.acbench.bak. -> (virtual-key code or None, what happened)."""
+    """Make sure 'Start race' has a usable key in controls.ini and return it.
+    - a binding that is already there is used (Content Manager writes it as hex with a comment, e.g. KEY=0x4F ; O),
+      unless it is a Ctrl+key that AC itself uses for something else (see CONFLICTS): then it is replaced by Ctrl+F12;
+    - duplicate KEY lines are cleaned up so exactly one is left;
+    - a missing entry is written the way Content Manager writes it.
+    Only this one section is touched; the rest of the file is kept byte for byte, and a backup of the original is saved
+    once as controls.ini.acbench.bak. -> (virtual-key code or None, what happened)."""
     path = controls_ini(docs_dir)
     if not path.is_file():
         return None, ("controls.ini not found in %s: start Assetto Corsa once (or Content Manager) so it is created"
@@ -102,32 +124,71 @@ def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
     original = path.read_bytes()
     lines, nl = _split(original.decode("latin-1"))
     sec = _find_section(lines, SECTION)
-    changed = False
+    before = " | ".join(x.rstrip("\r") for x in lines[sec[0]:sec[1]] if x.strip()) if sec else ""
+    notes = ""
     if sec:
-        found = _find_key(lines, *sec)
-        if found and found[1] > 0:
-            return found[1], "using the 'Start race' hotkey already set in controls.ini: Ctrl+%s" % vk_name(found[1])
-        if found:
-            lines[found[0]] = "KEY=%d" % default_vk
+        keys = _find_keys(lines, *sec)
+        eff = _effective(keys)
+        if eff and eff not in CONFLICTS:
+            vk, how = eff, "using the 'Start race' hotkey set in controls.ini: Ctrl+%s" % vk_name(eff)
+            keep_line = [i for i, v in keys if v == eff][-1]
+            drop = [i for i, _ in keys if i != keep_line]
+            if not drop:
+                return vk, how
+            how += " (removed %d duplicate KEY line%s)" % (len(drop), "s" if len(drop) > 1 else "")
+            for i in sorted(drop, reverse=True):
+                del lines[i]
         else:
-            lines.insert(sec[0] + 1, "KEY=%d" % default_vk)
-        changed = True
+            vk = default_vk
+            how = ("replaced Ctrl+%s (AC uses it for something else) with Ctrl+%s in controls.ini"
+                   % (vk_name(eff), vk_name(vk))) if eff else "set the 'Start race' hotkey in controls.ini: Ctrl+%s" % vk_name(vk)
+            if keys:
+                first = keys[0][0]
+                lines[first] = _canonical(vk)
+                for i in sorted((i for i, _ in keys[1:]), reverse=True):
+                    del lines[i]
+            else:
+                lines.insert(sec[0] + 1, _canonical(vk))
+        how += " (the section before: %s)" % before
     else:
+        vk = default_vk
         while lines and lines[-1].strip() == "":
             lines.pop()
-        lines += ["", "[%s]" % SECTION, "KEY=%d" % default_vk, ""]
-        changed = True
-    if changed:
-        backup = path.with_name(BACKUP_NAME)
-        try:
-            if not backup.exists():
-                backup.write_bytes(original)
-            tmp = path.with_name(path.name + ".acbench.tmp")
-            tmp.write_bytes(nl.join(lines).encode("latin-1"))
-            tmp.replace(path)
-        except OSError as e:
-            return None, "could not write controls.ini (%s)" % e
-    return default_vk, "set the 'Start race' hotkey in controls.ini: Ctrl+%s" % vk_name(default_vk)
+        lines += ["", "[%s]" % SECTION, _canonical(vk), "JOY=-1", "BUTTON=-1", "BUTTON_MODIFICATOR=-1", ""]
+        how = "set the 'Start race' hotkey in controls.ini: Ctrl+%s (there was no section)" % vk_name(vk)
+    backup = path.with_name(BACKUP_NAME)
+    try:
+        if not backup.exists():
+            backup.write_bytes(original)
+        tmp = path.with_name(path.name + ".acbench.tmp")
+        tmp.write_bytes(nl.join(lines).encode("latin-1"))
+        tmp.replace(path)
+    except OSError as e:
+        return None, "could not write controls.ini (%s)" % e
+    return vk, how
+
+
+def raw_section(docs_dir):
+    """The lines of [__CM_START_SESSION] exactly as they are in controls.ini (header first), or None."""
+    try:
+        lines, _ = _split(controls_ini(docs_dir).read_bytes().decode("latin-1"))
+    except OSError:
+        return None
+    sec = _find_section(lines, SECTION)
+    return [x.rstrip("\r") for x in lines[sec[0]:sec[1]] if x.strip()] if sec else None
+
+
+def content_manager_running():
+    """True/False if Content Manager is running (Windows only), None if that cannot be told."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Content Manager.exe", "/NH"], capture_output=True,
+                             text=True, timeout=15, creationflags=0x08000000).stdout
+        return "content manager.exe" in out.lower()
+    except Exception:
+        return None
 
 
 def csp_handles_start_session(ac_dir):
@@ -145,12 +206,20 @@ def describe(docs_dir, ac_dir=None):
     vk = read_start_hotkey(docs_dir)
     lines = [("Start-race hotkey in controls.ini: Ctrl+%s" % vk_name(vk)) if vk
              else "Start-race hotkey in controls.ini: not set yet (the app sets it before the first benchmark)"]
+    raw = raw_section(docs_dir)
+    lines.append("controls.ini says: " + (" | ".join(raw) if raw else "(no [%s] section)" % SECTION))
+
     if ac_dir:
         csp = csp_handles_start_session(ac_dir)
-        lines.append({True: "Custom Shaders Patch handles it inside the game: works however AC is started",
-                      False: "Custom Shaders Patch does NOT list it: only Content Manager acts on this hotkey, and only "
-                             "for games it started itself, so it may do nothing here",
+        lines.append({True: "Custom Shaders Patch handles it inside the game: works however AC is started, Content Manager "
+                            "is not needed",
+                      False: "Custom Shaders Patch does NOT list it: then only Content Manager acts on this hotkey",
                       None: "Custom Shaders Patch hotkey list not found (CSP not installed or not recent enough)"}[csp])
+        if csp is not True:
+            cm = content_manager_running()
+            lines.append({True: "Content Manager is running",
+                          False: "Content Manager is NOT running, so the hotkey may do nothing",
+                          None: "Content Manager: cannot tell if it is running"}[cm])
     return lines
 
 

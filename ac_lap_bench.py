@@ -384,6 +384,21 @@ def main():
     res_path = Path(args.results)
     results = load_results(res_path)
 
+    # a car without a skins folder cannot be put on the grid (unowned DLC car or incomplete install): say so loudly
+    no_skin = [c for c in cars if not first_skin(c)]
+    if no_skin:
+        print(f"{len(no_skin)} selected car(s) cannot be raced: no skins folder in content\\cars\\<car>\\skins "
+              "(an unowned DLC car or an incomplete install): "
+              + ", ".join(c.name for c in no_skin[:12]) + (" ..." if len(no_skin) > 12 else ""), flush=True)
+        cars = [c for c in cars if c not in no_skin]
+        if not args.dry_run:
+            for c in no_skin:
+                for spec in specs:
+                    results.setdefault(c.name, {})[spec] = {"status": "failed", "reason": "no skins"}
+            save_results(res_path, results)
+        if not cars:
+            sys.exit("Nothing to benchmark: none of the selected cars can be raced (see above).")
+
     est = {}
     if args.group_by:
         with open(args.group_by, newline="", encoding="utf-8") as f:

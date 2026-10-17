@@ -191,14 +191,16 @@ device gets its own key for the same account, saved in its own `cloud_config.jso
 
 AC shows a pre-race "Drive" screen that has to be passed before the AI race begins. Setup > **How each race is started**:
 
-- **AC's own "Start race" hotkey** (default, recommended): the same command as Content Manager > Settings > Assetto Corsa >
+- **"Start race" hotkey** (default, recommended): the same command as Content Manager > Settings > Assetto Corsa >
   Controls > System > Race > *Start race*. It is stored in `Documents\Assetto Corsa\cfg\controls.ini` as
-  `[__CM_START_SESSION]` / `KEY=<virtual-key code>` and the hotkey is Ctrl + that key. The app adds the entry itself
-  (default Ctrl+F12) if it is missing, changing only that one line and keeping a backup (`controls.ini.acbench.bak`);
-  a binding you already set is kept and used. It then presses the combination in the AC window until the race starts.
-  No clicking, no calibration. Custom Shaders Patch must handle this hotkey inside the game: the log (and
-  `ac_controls.py status`) says whether `extension\config\data_hotkeys_supported.txt` lists `__CM_START_SESSION`.
-  *Test start hotkey* on the Setup tab presses it once (open AC on the Drive screen first).
+  `[__CM_START_SESSION]` with `KEY=0x7B ; F12` (Content Manager writes the key as hex plus its name; the app reads hex and
+  plain numbers), hotkey = Ctrl + that key. Custom Shaders Patch handles it inside the game when
+  `extension\config\data_hotkeys_supported.txt` lists `__CM_START_SESSION`, so Content Manager does not have to run; if
+  CSP does not list it, only Content Manager acts on it. The app adds the entry (default Ctrl+F12) if it is missing, keeps
+  an existing binding, replaces one that AC itself uses (Ctrl+A, T, H, O, L, M, G, I, R, S, U) and removes duplicate KEY
+  lines, changing only that section and keeping a backup (`controls.ini.acbench.bak`). It then presses the combination
+  in the AC window until the race starts. *Set up start hotkey* prints what controls.ini contains; *Test start hotkey*
+  presses it once (open AC on the Drive screen first). Restart AC after the binding changes.
 - **Click the Drive button**: the old method (Calibrate once; the click position is a fraction of the AC window).
 - **Press a key**: sends the key (default Enter) after the delay.
 - **I start each race myself**: the app only launches AC.

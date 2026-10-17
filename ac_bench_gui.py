@@ -295,20 +295,21 @@ def build_rows(cars, results, tracks, profile=None):
     rows = []
     for cid, name in cars:
         r = results.get(cid, {})
-        times, nok, failed = [], 0, False
+        times, nok, failed, why = [], 0, False, ""
         for t in tracks:
             e = r.get(t, {})
             ms = lap_score(e)[0] if e.get("status") == "ok" else None
             times.append(None if ms is None else ms / 1000)
             nok += 1 if ms is not None else 0
-            failed = failed or e.get("status") == "failed"
+            if e.get("status") == "failed":
+                failed, why = True, why or str(e.get("reason") or "")
         if tracks and nok == len(tracks):
             old = any(r.get(t, {}).get("profile") != profile for t in tracks)
             status = "done (old settings)" if old else "done"
         elif nok:
             status = f"partial {nok}/{len(tracks)}"
         else:
-            status = "failed" if failed else "not run"
+            status = ("failed: " + why[:40] if why else "failed") if failed else "not run"
         rows.append({"id": cid, "name": name, "status": status, "times": times, "gap": None, "cls": None,
                      "flags": "", "bop": "", "variance": None})
     return rows
@@ -397,7 +398,7 @@ def row_matches(kind, r, text, sf):
         return bool(r["flags"])
     if kind == "local":
         return ((sf == "Done" and s.startswith("done")) or (sf == "Not done" and not s.startswith("done"))
-                or (sf == "Partial" and s.startswith("partial")) or (sf == "Failed" and s == "failed")
+                or (sf == "Partial" and s.startswith("partial")) or (sf == "Failed" and s.startswith("failed"))
                 or (sf == "Old settings" and "old settings" in s))
     return ((sf == "Verified" and s == "verified") or (sf == "Provisional" and s == "provisional")
             or (sf == "No server class" and s == "no server class"))
@@ -957,7 +958,7 @@ def main():
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     drv = group(ts, "How each race is started")
-    modes = (("hotkey", "AC's own 'Start race' hotkey (recommended: set up automatically, nothing is clicked)"),
+    modes = (("hotkey", "'Start race' hotkey (recommended: nothing is clicked, the app sets it up in controls.ini)"),
              ("click", "Click the Drive button (needs Calibrate; the position can drift)"),
              ("key", "Press a key to start"),
              ("manual", "I start each race myself (click Drive in the game)"))
@@ -985,9 +986,9 @@ def main():
     btn(af, "Test start hotkey (AC open on the Drive screen)",
         lambda: run(["ac_input.py", "hotkey", "--docs-dir", cfg()["docs_dir"]]), 2, 1, 2)
     ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
-        "The hotkey is the same 'Start race' command as in Content Manager (Settings > Assetto Corsa > Controls > System). The app\n"
-        "adds it to controls.ini itself if it is missing and keeps a binding you already set. Calibrate and Test click only\n"
-        "matter for the click mode.")
+        "The same 'Start race' command as in Content Manager (Settings > Assetto Corsa > Controls > System). Custom Shaders Patch\n"
+        "handles it inside the game when it lists __CM_START_SESSION, so Content Manager need not run; 'Set up start hotkey' shows\n"
+        "that and what controls.ini contains. An existing key is kept unless AC uses it for something else (Ctrl+A, O, ...).")
               ).grid(row=len(modes) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
