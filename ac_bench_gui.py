@@ -59,7 +59,7 @@ DEFAULTS = {
     "docs_dir": str(Path.home() / "Documents" / "Assetto Corsa"),
     "group_by": "",
     "batch": 1, "include": "", "exclude": "",
-    "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
+    "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "", "probe_all_tracks": False,
     "start_delay": 25, "auto_upload": True,
     "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
 }
@@ -229,9 +229,13 @@ def create_ref_cmd(c, out=""):
     return cmd
 
 
-def probe_cmd(c, ids=None):
+def probe_cmd(c, ids=None, all_tracks=None):
+    """Rebenchmark chosen cars. By default only the tracks where a car has no valid time yet are run;
+    all_tracks=True (or the 'probe_all_tracks' setting) redoes every track."""
     ids = list(ids) if ids is not None else c["probe_ids"].split()
-    return bench_cmd(c, ["--probe", *ids])
+    if all_tracks is None:
+        all_tracks = bool(c.get("probe_all_tracks"))
+    return bench_cmd(c, (["--all-tracks"] if all_tracks else []) + ["--probe", *ids])
 
 
 def tag_cmd(c, mode):
@@ -988,7 +992,7 @@ def main():
     sub = ttk.Notebook(tc)
     sub.grid(row=0, column=0, sticky="nsew")
 
-    def do_bench_selected(s):
+    def do_bench_selected(s, all_tracks=False):
         ids = list(s["tree"].selection())
         if not ids:
             messagebox.showinfo("Select cars", "Select one or more cars in the list first.")
@@ -996,10 +1000,11 @@ def main():
         c = need_bench()
         if not c:
             return
-        if len(ids) > 20 and not messagebox.askyesno(
-                "Many cars", f"{len(ids)} cars selected. They run on every track, even if already rated. Continue?"):
-            return
-        run_with_conditions(lambda: probe_cmd(cfg(), ids), graceful=True)
+        if len(ids) > 20:
+            what = "on every track, even if already rated" if all_tracks else "only on the tracks where they have no time yet"
+            if not messagebox.askyesno("Many cars", f"{len(ids)} cars selected. They run {what}. Continue?"):
+                return
+        run_with_conditions(lambda: probe_cmd(cfg(), ids, all_tracks), graceful=True)
 
     def make_section(kind):
         local = kind == "local"
@@ -1114,6 +1119,7 @@ def main():
         bar_ = ttk.Frame(fr)
         bar_.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         pbtn(bar_, "Benchmark selected cars", lambda: do_bench_selected(s), accent=True)
+        pbtn(bar_, "Redo all tracks for selected", lambda: do_bench_selected(s, True))
         if not local:
             pbtn(bar_, "Apply server classes as tags", lambda: do_download_and_tag())
             pbtn(bar_, "Benchmark cars missing from server", lambda: do_missing())
@@ -1233,6 +1239,8 @@ def main():
     ttk.Checkbutton(rr, text="Also retry cars that failed before", variable=vars_["retry_failed"]).grid(
         row=1, column=1, columnspan=4, sticky="w", pady=(4, 0))
     entry_row(sel, 3, "Probe car ids (space separated)", "probe_ids")
+    ttk.Checkbutton(sel, text="Probe: redo tracks that already have a valid time too (default: only missing/failed tracks)",
+                    variable=vars_["probe_all_tracks"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
     opts = group(t1, "Run options")
     nums = ttk.Frame(opts)

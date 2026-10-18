@@ -318,7 +318,10 @@ def main():
     ap.add_argument("--retry-failed", action="store_true", help="also redo cars that failed before")
     ap.add_argument("--rerun", nargs="*", default=None, metavar="CAR_ID",
                     help="redo cars that already have results: all selected cars, or only the ids given")
-    ap.add_argument("--probe", nargs="+", metavar="CAR_ID", help="test run: these cars as one batch on every track (always runs, even if already rated)")
+    ap.add_argument("--probe", nargs="+", metavar="CAR_ID",
+                    help="rebenchmark these cars (even if already rated), but only on the tracks where they have no valid time yet")
+    ap.add_argument("--all-tracks", action="store_true",
+                    help="with --probe: redo EVERY track for these cars, even tracks they already have a valid time on")
     ap.add_argument("--dry-run", action="store_true", help="only count jobs")
     ap.add_argument("--start-delay", type=int, default=25,
                     help="seconds after AC is launched before the first press of the Start race hotkey")
@@ -418,10 +421,13 @@ def main():
     for c in cars:
         for spec in specs:
             prev = results.get(c.name, {}).get(spec, {})
-            forced = rerun_all or c.name in rerun_ids or bool(args.probe)   # a probe always runs
+            # --rerun redoes every track of the chosen cars. --probe is an explicit pick of cars, so their failed
+            # tracks are retried, but a track that already has a valid time is kept unless --all-tracks is given.
+            forced = rerun_all or c.name in rerun_ids or (bool(args.probe) and args.all_tracks)
+            probe_pick = bool(args.probe) and not args.all_tracks
             if prev.get("status") == "ok" and not forced:
                 done_skip += 1
-            elif prev.get("status") == "failed" and not (forced or args.retry_failed):
+            elif prev.get("status") == "failed" and not (forced or probe_pick or args.retry_failed):
                 fail_skip += 1
             else:
                 todo.setdefault(c.name, []).append(spec)
