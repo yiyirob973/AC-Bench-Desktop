@@ -31,9 +31,11 @@ BACKUP_NAME = "controls.ini.acbench.bak"
 _HEADER = re.compile(r"^\s*\[([^\]]*)\]\s*$")
 # Content Manager writes the key as hexadecimal followed by the key's name, e.g.  KEY=0x4F ; O   (older/other tools: KEY=79)
 _KEY = re.compile(r"^\s*KEY\s*=\s*(-?(?:0[xX][0-9A-Fa-f]+|\d+))\s*(?:[;#].*)?$", re.IGNORECASE)
-# Ctrl + these letters are shortcuts built into AC itself (ABS, TC, hide apps, restart session, names, mouse steering, auto
-# gearbox, racing line, replay, slow motion, virtual desktops): pressing one would also trigger that, so we do not use them
-CONFLICTS = {ord(c) for c in "ATHOLMGIRSU"}
+# Ctrl + these letters are also shortcuts built into AC itself (ABS, TC, hide apps, restart session, names, mouse steering,
+# auto gearbox, racing line, replay, slow motion, virtual desktops). A key the user chose is still used; the log just says so.
+BUILTIN_CTRL = {ord(c): n for c, n in (("A", "ABS"), ("T", "traction control"), ("H", "hide apps"), ("O", "restart session"),
+                                       ("L", "driver names"), ("M", "mouse steering"), ("G", "automatic gearbox"),
+                                       ("I", "racing line"), ("R", "replay"), ("S", "slow motion"), ("U", "virtual desktops"))}
 
 _NAMES = {0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc", 0x20: "Space", 0x21: "Page Up", 0x22: "Page Down",
           0x23: "End", 0x24: "Home", 0x2D: "Insert", 0x2E: "Delete", 0x13: "Pause", 0x91: "Scroll Lock"}
@@ -111,10 +113,10 @@ def read_start_hotkey(docs_dir):
 
 def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
     """Make sure 'Start race' has a usable key in controls.ini and return it.
-    - a binding that is already there is used (Content Manager writes it as hex with a comment, e.g. KEY=0x4F ; O),
-      unless it is a Ctrl+key that AC itself uses for something else (see CONFLICTS): then it is replaced by Ctrl+F12;
+    - a binding that is already there is ALWAYS used and never changed (Content Manager writes it as hex with a
+      comment, e.g. KEY=0x4F ; O);
     - duplicate KEY lines are cleaned up so exactly one is left;
-    - a missing entry is written the way Content Manager writes it.
+    - only when nothing is set, Ctrl+F12 is written, the way Content Manager writes it.
     Only this one section is touched; the rest of the file is kept byte for byte, and a backup of the original is saved
     once as controls.ini.acbench.bak. -> (virtual-key code or None, what happened)."""
     path = controls_ini(docs_dir)
@@ -129,8 +131,10 @@ def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
     if sec:
         keys = _find_keys(lines, *sec)
         eff = _effective(keys)
-        if eff and eff not in CONFLICTS:
+        if eff:
             vk, how = eff, "using the 'Start race' hotkey set in controls.ini: Ctrl+%s" % vk_name(eff)
+            if eff in BUILTIN_CTRL:
+                how += " (note: AC also uses Ctrl+%s for %s)" % (vk_name(eff), BUILTIN_CTRL[eff])
             keep_line = [i for i, v in keys if v == eff][-1]
             drop = [i for i, _ in keys if i != keep_line]
             if not drop:
@@ -140,8 +144,7 @@ def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
                 del lines[i]
         else:
             vk = default_vk
-            how = ("replaced Ctrl+%s (AC uses it for something else) with Ctrl+%s in controls.ini"
-                   % (vk_name(eff), vk_name(vk))) if eff else "set the 'Start race' hotkey in controls.ini: Ctrl+%s" % vk_name(vk)
+            how = "nothing was set: set the 'Start race' hotkey in controls.ini to Ctrl+%s" % vk_name(vk)
             if keys:
                 first = keys[0][0]
                 lines[first] = _canonical(vk)

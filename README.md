@@ -197,8 +197,8 @@ AC shows a pre-race "Drive" screen that has to be passed before the AI race begi
   plain numbers), hotkey = Ctrl + that key. Custom Shaders Patch handles it inside the game when
   `extension\config\data_hotkeys_supported.txt` lists `__CM_START_SESSION`, so Content Manager does not have to run; if
   CSP does not list it, only Content Manager acts on it. The app adds the entry (default Ctrl+F12) if it is missing, keeps
-  an existing binding, replaces one that AC itself uses (Ctrl+A, T, H, O, L, M, G, I, R, S, U) and removes duplicate KEY
-  lines, changing only that section and keeping a backup (`controls.ini.acbench.bak`). It then presses the combination
+  an existing binding of yours (always used, never replaced; the log notes it if AC also uses that Ctrl+key for something
+  else) and removes duplicate KEY lines, changing only that section and keeping a backup (`controls.ini.acbench.bak`). It then presses the combination
   in the AC window until the race starts. *Set up start hotkey* prints what controls.ini contains; *Test start hotkey*
   presses it once (open AC on the Drive screen first). Restart AC after the binding changes.
 - **Click the Drive button**: the old method (Calibrate once; the click position is a fraction of the AC window).

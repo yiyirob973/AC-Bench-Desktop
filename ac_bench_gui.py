@@ -988,7 +988,7 @@ def main():
     ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
         "The same 'Start race' command as in Content Manager (Settings > Assetto Corsa > Controls > System). Custom Shaders Patch\n"
         "handles it inside the game when it lists __CM_START_SESSION, so Content Manager need not run; 'Set up start hotkey' shows\n"
-        "that and what controls.ini contains. An existing key is kept unless AC uses it for something else (Ctrl+A, O, ...).")
+        "that and what controls.ini contains. An existing key of yours is always used; F12 is only set when nothing is set.")
               ).grid(row=len(modes) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
