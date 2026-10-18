@@ -119,7 +119,7 @@ are made first. The old full-download `ac_cloud.py sync` is no longer used by th
 1. **Setup**: Assetto Corsa folders, **Install / update required files** (the bundled benchmark car and the Lua lap
    logger; a checklist shows what is missing and what to do next), server address, name, invite code, Register.
 2. **Vanilla check**: verify the benchmark tracks and `acs.exe` against the server's environment.
-3. **Benchmark**: the server's conditions (read-only), choose cars, start, then **Upload my results**.
+3. **Benchmark**: the server's conditions (read-only), choose cars, start. Each pack's times are uploaded automatically when its cars finish ("Upload my results" is the backup).
 4. **Cars & ratings**: your local ratings and the live server classes; **Apply server classes as tags**;
    **Benchmark cars missing from server** (installed cars the server has no class for yet).
 
@@ -137,7 +137,7 @@ tables the same way, so no migration is needed.
 ## Who decides the class
 
 The desktop app only measures lap times. It never works out a class itself: **Local cars** shows the times measured on
-this PC. After **Upload my results** the server recomputes the scores, classifies the cars and answers with the class of
+this PC. When its times are uploaded (automatically after each pack, or with the backup button) the server recomputes the scores, classifies the cars and answers with the class of
 every car just uploaded (printed in the log, then shown live in **Server cars**). Apply server classes as tags to write
 them into your cars.
 
@@ -189,24 +189,27 @@ device gets its own key for the same account, saved in its own `cloud_config.jso
 
 ## How each race is started
 
-AC shows a pre-race "Drive" screen that has to be passed before the AI race begins. Setup > **How each race is started**:
+Every race is started by pressing AC's own **Start race** hotkey; there is no other start method (no clicking, no
+calibration). It is the same command as Content Manager > Settings > Assetto Corsa > Controls > System > Race > *Start race*,
+stored in `Documents\Assetto Corsa\cfg\controls.ini` as `[__CM_START_SESSION]` with `KEY=0x7B ; F12` (Content Manager writes
+the key as hex plus its name; the app reads hex and plain numbers). The hotkey is Ctrl + that key.
 
-- **"Start race" hotkey** (default, recommended): the same command as Content Manager > Settings > Assetto Corsa >
-  Controls > System > Race > *Start race*. It is stored in `Documents\Assetto Corsa\cfg\controls.ini` as
-  `[__CM_START_SESSION]` with `KEY=0x7B ; F12` (Content Manager writes the key as hex plus its name; the app reads hex and
-  plain numbers), hotkey = Ctrl + that key. Custom Shaders Patch handles it inside the game when
-  `extension\config\data_hotkeys_supported.txt` lists `__CM_START_SESSION`, so Content Manager does not have to run; if
-  CSP does not list it, only Content Manager acts on it. The app adds the entry (default Ctrl+F12) if it is missing, keeps
-  an existing binding of yours (always used, never replaced; the log notes it if AC also uses that Ctrl+key for something
-  else) and removes duplicate KEY lines, changing only that section and keeping a backup (`controls.ini.acbench.bak`). It then presses the combination
-  in the AC window until the race starts. *Set up start hotkey* prints what controls.ini contains; *Test start hotkey*
-  presses it once (open AC on the Drive screen first). Restart AC after the binding changes.
-- **Click the Drive button**: the old method (Calibrate once; the click position is a fraction of the AC window).
-- **Press a key**: sends the key (default Enter) after the delay.
-- **I start each race myself**: the app only launches AC.
+- A key you already set is **always used and never changed** (the log notes it if AC also uses that Ctrl+key for something
+  else). F12 is written only when nothing is set. Duplicate `KEY` lines are cleaned up. Only that section is touched, a backup
+  is kept (`controls.ini.acbench.bak`), and a dry run never touches the file.
+- Custom Shaders Patch handles the hotkey inside the game when `extension\config\data_hotkeys_supported.txt` lists
+  `__CM_START_SESSION`, so Content Manager does not have to run; the log says which case your install is.
+- Setup > *Starting each race*: **Set up start hotkey** prints what controls.ini contains, **Test start hotkey** presses it once
+  (open AC on the pre-race screen first), and *first try after launching AC* is the delay before the first press. The app then
+  presses it every few seconds until the logger reports the race has started. Restart AC after the key changes.
 
-The key box also works as a fallback in the first two modes: if the race has not started after the delay, that key is
-pressed too. Settings saved by an older version that used auto-click keep using the click mode.
+## Uploading results
+
+By default every pack's times are uploaded to the server as soon as its cars have run on every track (a pack is one car when
+*Cars per pack* is 1): the server recomputes the scores and answers with the class of each car, printed in the log. If an upload
+fails (offline, rate limit, not registered) the benchmark carries on and the times stay saved. **Upload my results (backup)** on the
+Benchmark tab sends everything that has not been uploaded yet; untick *Upload each pack's times automatically* to upload only by
+button. Uploaded results are remembered, so nothing is sent twice.
 
 Job processes (benchmark, upload, ...) always write UTF-8, so car names with special characters can no longer crash an
 upload or show up garbled in the log.

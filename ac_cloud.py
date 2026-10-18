@@ -232,6 +232,13 @@ def build_entries(results, env_log, cars_dir, server_cfg, attest_legacy=False):
 
 
 def cmd_upload(args):
+    upload_results(args)
+
+
+def upload_results(args, only_cars=None):
+    """Send results to the server. only_cars: just these car folders (used for the automatic upload after each car).
+    Raises SystemExit with the reason if the upload cannot be done; results already sent are remembered, so a later
+    call only sends what is new."""
     cfg = settings(args)
     cond, _ = ac_conditions.fetch(cfg["server"])          # If-None-Match: always asks the server first
     if not cond["accepting_submissions"]:
@@ -239,6 +246,8 @@ def cmd_upload(args):
     sc = {"profile": cond["profile"], "tracks": cond["tracks"], "laps": cond["laps"], "max_batch": cond["max_batch"]}
     import ac_rating                                         # after the fetch: it may read the baseline on import
     results = load_json(args.results, {})
+    if only_cars is not None:
+        results = {car: per for car, per in results.items() if car in only_cars}
     env_log = load_json(args.log, [])
     entries, envs, skipped = build_entries(results, env_log, args.cars_dir, sc, getattr(args, "attest_legacy", False))
     done = load_json(UPLOADED, {})
