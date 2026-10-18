@@ -60,7 +60,7 @@ DEFAULTS = {
     "group_by": "",
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
-    "start_mode": "hotkey", "click_delay": 25, "press_key": "",
+    "start_delay": 25, "auto_upload": True,
     "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
 }
 
@@ -179,16 +179,9 @@ def bench_cmd(c, extra=()):
         cmd += ["--exclude", ex]
     if c["retry_failed"]:
         cmd.append("--retry-failed")
-    mode, key = c["start_mode"], str(c["press_key"]).strip()
-    if mode == "hotkey":
-        cmd += ["--start-hotkey", "--click-delay", str(c["click_delay"])]   # AC's own 'Start race' command
-    elif mode == "click":
-        cmd += ["--click-drive", "--click-delay", str(c["click_delay"])]
-    elif mode == "key":
-        key = key or "enter"
-        cmd += ["--click-delay", str(c["click_delay"])]
-    if mode in ("hotkey", "click", "key") and key:         # a key press as a fallback or as the start itself
-        cmd += ["--press-key", key]
+    cmd += ["--start-delay", str(c["start_delay"])]
+    if c["auto_upload"] and str(c["cloud_url"]).strip():      # send each pack's times as soon as its cars have finished
+        cmd += ["--auto-upload", "--server", str(c["cloud_url"]).strip()]
     cmd += list(extra)
     # variable-length options go last
     if c["rerun_mode"] == "all":
@@ -451,10 +444,8 @@ def main():
         except Exception:
             pass
     vars_ = {}
-    if "start_mode" not in saved and saved.get("auto_drive"):
-        saved["start_mode"] = "click"          # settings from before there were start modes: keep clicking
-    if saved.get("start_mode") == "autospawn":
-        saved["start_mode"] = "hotkey"         # that mode no longer exists
+    if "start_delay" not in saved and "click_delay" in saved:
+        saved["start_delay"] = saved["click_delay"]     # the old name of the delay before the first start attempt
     for k, d in DEFAULTS.items():
         v = saved.get(k, d)
         if isinstance(d, bool):
@@ -957,39 +948,21 @@ def main():
         "Each device gets its own key for the same account; the code works once and expires after 10 minutes.")
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-    drv = group(ts, "How each race is started")
-    modes = (("hotkey", "'Start race' hotkey (recommended: nothing is clicked, the app sets it up in controls.ini)"),
-             ("click", "Click the Drive button (needs Calibrate; the position can drift)"),
-             ("key", "Press a key to start"),
-             ("manual", "I start each race myself (click Drive in the game)"))
-    for i, (value, text) in enumerate(modes):
-        ttk.Radiobutton(drv, text=text, value=value, variable=vars_["start_mode"]).grid(
-            row=i, column=0, columnspan=3, sticky="w", padx=4, pady=1)
+    drv = group(ts, "Starting each race")
     af = ttk.Frame(drv)
-    af.grid(row=len(modes), column=0, columnspan=3, sticky="w", pady=(6, 0))
-    ttk.Label(af, text="first try after (s)").grid(row=0, column=0, padx=(4, 4))
-    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["click_delay"]).grid(row=0, column=1)
-    ttk.Label(af, text="key (to press, or as a fallback)").grid(row=0, column=2, padx=(14, 4))
-    ttk.Entry(af, textvariable=vars_["press_key"], width=8).grid(row=0, column=3)
-
-    def do_calibrate():
-        messagebox.showinfo("Calibrate Drive button",
-                            "1. Start AC (windowed/borderless) until the Drive menu shows, e.g. from Content Manager.\n"
-                            "2. Hover the mouse over the Drive button.\n"
-                            "3. Press F8.\n\nClick OK, then do those steps (waits up to 3 minutes).")
-        run(["ac_input.py", "calibrate"])
-
-    btn(af, "Calibrate Drive button", do_calibrate, 1, 0)
-    btn(af, "Test click", lambda: run(["ac_input.py", "click"]), 1, 1, 2)
+    af.grid(row=0, column=0, columnspan=3, sticky="w", pady=(2, 0))
+    ttk.Label(af, text="first try after launching AC (s)").grid(row=0, column=0, padx=(4, 4))
+    ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["start_delay"]).grid(row=0, column=1)
     btn(af, "Set up start hotkey", lambda: run(["ac_controls.py", "setup", "--docs-dir", cfg()["docs_dir"],
-                                                 "--ac-dir", cfg()["ac_dir"]]), 2, 0)
-    btn(af, "Test start hotkey (AC open on the Drive screen)",
-        lambda: run(["ac_input.py", "hotkey", "--docs-dir", cfg()["docs_dir"]]), 2, 1, 2)
+                                                 "--ac-dir", cfg()["ac_dir"]]), 1, 0)
+    btn(af, "Test start hotkey (AC open on the pre-race screen)",
+        lambda: run(["ac_input.py", "hotkey", "--docs-dir", cfg()["docs_dir"]]), 1, 1, 2)
     ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
-        "The same 'Start race' command as in Content Manager (Settings > Assetto Corsa > Controls > System). Custom Shaders Patch\n"
-        "handles it inside the game when it lists __CM_START_SESSION, so Content Manager need not run; 'Set up start hotkey' shows\n"
-        "that and what controls.ini contains. An existing key of yours is always used; F12 is only set when nothing is set.")
-              ).grid(row=len(modes) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        "Every race is started by pressing AC's 'Start race' hotkey (Ctrl + a key, the same command as in Content Manager > Settings >\n"
+        "Assetto Corsa > Controls > System). A key you already set there is used; F12 is set only if nothing is set. Custom Shaders\n"
+        "Patch handles it inside the game when it lists __CM_START_SESSION, so Content Manager need not run. 'Set up start hotkey'\n"
+        "shows what controls.ini contains. Restart AC after the key changes.")
+              ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
     ttk.Label(tgs, justify="left", style="Muted.TLabel", text=(
@@ -1286,16 +1259,19 @@ def main():
     pbtn(bf, "Dry run (count jobs)", lambda: do_bench(True))
     pbtn(bf, "Probe cars", do_probe)
 
-    upg = group(t1, "After the run: upload your results")
+    upg = group(t1, "Uploading your results")
+    ttk.Checkbutton(upg, text="Upload each pack's times automatically as soon as its cars have finished (needs registration)",
+                    variable=vars_["auto_upload"]).grid(row=0, column=0, columnspan=3, sticky="w", padx=4)
     upr = ttk.Frame(upg)
-    upr.grid(row=0, column=0, columnspan=3, sticky="w")
-    pbtn(upr, "Upload my results", lambda: do_cloud("upload"), accent=True)
+    upr.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    pbtn(upr, "Upload my results (backup)", lambda: do_cloud("upload"))
     ttk.Checkbutton(upg, text="Include results benchmarked before the server update (re-checks the vanilla tracks first)",
-                    variable=vars_["cloud_attest"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
+                    variable=vars_["cloud_attest"]).grid(row=2, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
     ttk.Label(upg, justify="left", style="Muted.TLabel", text=(
-        "Upload sends only results driven on the verified vanilla setup under the server's current baseline; the server\n"
-        "recomputes every score and rejects what does not validate (reasons appear in the log).")
-              ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        "A pack is the cars that ran together (one car when 'Cars per pack' is 1). The server recomputes every score and rejects what\n"
+        "does not validate, and its classes for those cars appear in the log. If an automatic upload fails, the times stay saved: the\n"
+        "button sends everything that has not been uploaded yet.")
+              ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def refresh_conditions(quiet=False):
         c = cfg()

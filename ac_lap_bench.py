@@ -127,6 +127,23 @@ def apply_batch(cp, base_car, batch, spec, laps):
         cp["ASSISTS"].update(bl.ASSISTS)
 
 
+def auto_upload(args, res_path, ac, car_names):
+    """Send the times of the cars that just finished to the server. Never stops the benchmark: if it fails, the times
+    stay saved and the Upload button (or the next successful upload) sends them."""
+    import argparse
+    import ac_cloud
+    ns = argparse.Namespace(server=args.server, results=str(res_path), log=str(res_path.with_name("track_check_log.json")),
+                            cars_dir=str(ac / "content" / "cars"), all=False, attest_legacy=False)
+    print(f"    uploading {len(car_names)} car(s) to the server ...", flush=True)
+    try:
+        ac_cloud.upload_results(ns, only_cars=set(car_names))
+    except SystemExit as e:
+        print(f"    upload failed: {e}. The times are saved; the Upload button sends them later.", flush=True)
+    except Exception as e:
+        print(f"    upload failed: {type(e).__name__}: {e}. The times are saved; the Upload button sends them later.",
+              flush=True)
+
+
 def kill_ac(proc):
     try:
         proc.kill()
@@ -208,17 +225,17 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
                 warned = True
                 print("    note: the in-game logger has not reported yet. Open the \"AC Bench\" app in the "
                       "apps sidebar and check its status, or see custom_shaders_patch.log for lines with ac_bench. If AC is "
-                      "sitting on the pre-race screen, change how races are started (Setup tab).", flush=True)
-            if args.auto and not started and attempts < args.click_max:
-                if now - start > args.click_delay and now - last_try > args.click_interval:
+                      "sitting on the pre-race screen, check the start-race hotkey (Setup tab > Test start hotkey).", flush=True)
+            if not started and attempts < args.start_attempts:
+                if now - start > args.start_delay and now - last_try > args.start_interval:
                     last_try, attempts = now, attempts + 1
                     try:
-                        found = args.auto[0](args.auto[1], args.auto[2], args.auto[3])
+                        found = args.start_race(args.start_vk)
                     except Exception as e:
                         found = False
-                        print(f"    auto-start error: {e}", flush=True)
+                        print(f"    start hotkey error: {e}", flush=True)
                     if attempts == 1:
-                        print("    auto-start: " + ("sent" if found else "AC window not found yet"), flush=True)
+                        print("    start hotkey: " + ("sent" if found else "AC window not found yet"), flush=True)
 
             # Retired / stuck / vanished cars: stop waiting for them so the run moves on.
             if started and race_t0 is not None:
@@ -303,16 +320,13 @@ def main():
                     help="redo cars that already have results: all selected cars, or only the ids given")
     ap.add_argument("--probe", nargs="+", metavar="CAR_ID", help="test run: these cars as one batch on every track (always runs, even if already rated)")
     ap.add_argument("--dry-run", action="store_true", help="only count jobs")
-    ap.add_argument("--start-hotkey", action="store_true",
-                    help="start races with AC's own 'Start race' hotkey (controls.ini [__CM_START_SESSION]; set up "
-                         "automatically): no clicking and no calibration")
-    ap.add_argument("--click-drive", action="store_true",
-                    help="auto-click the Drive button at the position saved by ac_input.py calibrate")
-    ap.add_argument("--click-pos", help="fx,fy (0-1 fractions of the AC window) instead of drive_click.json")
-    ap.add_argument("--press-key", help="key to press to start (enter, space, esc, f1-f12, a letter)")
-    ap.add_argument("--click-delay", type=int, default=25, help="seconds after launch before the first start attempt")
-    ap.add_argument("--click-interval", type=int, default=6, help="seconds between start attempts")
-    ap.add_argument("--click-max", type=int, default=40, help="max start attempts per launch")
+    ap.add_argument("--start-delay", type=int, default=25,
+                    help="seconds after AC is launched before the first press of the Start race hotkey")
+    ap.add_argument("--start-interval", type=int, default=6, help="seconds between presses of the Start race hotkey")
+    ap.add_argument("--start-attempts", type=int, default=40, help="max presses of the hotkey per launch")
+    ap.add_argument("--auto-upload", action="store_true",
+                    help="upload each pack's times to the server as soon as its cars have finished")
+    ap.add_argument("--server", help="server address for --auto-upload (default: the one saved by the app)")
     ap.add_argument("--reference", default=str(ac_paths.DATA / "track_reference.json"),
                     help="vanilla track reference made by ac_track_check.py create")
     ap.add_argument("--skip-track-check", action="store_true",
@@ -335,30 +349,6 @@ def main():
     result_file = ac / "apps" / "lua" / "ac_bench" / "result.json"
     if not result_file.parent.is_dir():
         sys.exit(f"Logger app missing: copy ac_bench to {result_file.parent}")
-
-    args.auto = None
-    if args.click_drive or args.press_key or args.start_hotkey:
-        try:
-            import ac_input
-        except Exception as e:
-            sys.exit(f"Auto-start unavailable: {e}")
-        combo = None
-        if args.start_hotkey:
-            import ac_controls
-            vk, note = ac_controls.ensure_start_hotkey(args.docs_dir)
-            print("start mode: AC 'Start race' hotkey: " + note, flush=True)
-            if vk is None:
-                sys.exit("Cannot use the start-race hotkey: " + note)
-            for line in ac_controls.describe(args.docs_dir, str(ac))[1:]:
-                print("    " + line, flush=True)
-            combo = [ac_input.key_code("ctrl"), vk]
-        pos = None
-        if args.click_drive:
-            pos = (tuple(float(v) for v in args.click_pos.split(",")) if args.click_pos
-                   else ac_input.load_click())
-            if not pos:
-                sys.exit("No Drive position saved. Run: python ac_input.py calibrate")
-        args.auto = (ac_input.nudge, pos, args.press_key, combo)
 
     cp = read_ini(args.template)
     for sec in ("RACE", "CAR_1"):
@@ -472,6 +462,28 @@ def main():
     if args.dry_run or not plan:
         return
 
+    # every race is started with AC's own "Start race" hotkey (controls.ini [__CM_START_SESSION]): an existing key of
+    # the user is used, F12 is set only when nothing is set
+    try:
+        import ac_input
+        import ac_controls
+    except Exception as e:
+        sys.exit(f"Cannot start races: {e}")
+    args.start_vk, note = ac_controls.ensure_start_hotkey(args.docs_dir)
+    print("Start-race hotkey: " + note, flush=True)
+    if args.start_vk is None:
+        sys.exit("Cannot start races without the Start race hotkey: " + note)
+    for line in ac_controls.describe(args.docs_dir, str(ac))[1:]:
+        print("    " + line, flush=True)
+    args.start_race = ac_input.start_race
+
+    if args.auto_upload:
+        import ac_cloud
+        if not ac_cloud.load_json(ac_cloud.CFG_FILE, {}).get("api_key"):
+            print("Automatic upload is on, but this PC is not registered with the server yet (Setup tab): the times "
+                  "are only saved here. Register, then use the Upload button.", flush=True)
+            args.auto_upload = False
+
     if not args.skip_track_check:
         import ac_track_check as tc
         print("Checking that the benchmark tracks are vanilla ...", flush=True)
@@ -516,6 +528,8 @@ def main():
                 msg = f"{r['best_ms'] / 1000:.3f}s" if r["status"] == "ok" else f"FAILED {r['reason']}"
                 print(f"    {car}: {msg}")
             save_results(res_path, results)
+            if args.auto_upload and (k == len(plan) or plan[k][2] != pk):      # the pack has now run on every track
+                auto_upload(args, res_path, ac, {c.name for _, g, p in plan if p == pk for c in g})
 
             if k == 1 and not any(len(r["laps_ms"]) for r in out.values()):
                 sys.exit("First launch logged no laps at all. The logger app is probably not loading: "
