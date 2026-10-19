@@ -103,7 +103,7 @@ def cmd_ping(args):
 
 def cmd_register(args):
     cfg = settings(args)
-    print("Registering as %s with %s (invite code of %d characters) ..." % (args.name, cfg["server"], len(args.invite.strip())),
+    print("Registering as %s with %s (invite code of %d characters)..." % (args.name, cfg["server"], len(args.invite.strip())),
           flush=True)
     code, r, _ = call(cfg, "POST", "/v1/register", {"invite": args.invite.strip(), "name": args.name.strip()})
     if code != 201:
@@ -120,7 +120,7 @@ def cmd_link(args):
     if code != 201:
         raise SystemExit("Could not create a link code at %s (HTTP %s): %s" % (cfg["server"], code, (r or {}).get("error", code)))
     print("LINK CODE: %s" % r["code"])
-    print("Valid for %d minutes, works once. On the other device open the Setup tab, enter this code under "
+    print("Valid for %d minutes, works once. On the other device, open the Setup tab, enter this code under "
           "'Use the same account on another device' and press 'Sign in'." % (r["expires_in"] // 60))
     return r
 
@@ -306,7 +306,7 @@ def cmd_sync(args):
         save_json(CFG_FILE, cfg)
     table = data.get("table")
     if not table:
-        print("The server has no class table yet: the operator has to publish one. Nothing to match.")
+        print("The server has no class table yet. The operator has to publish one.")
     wanted = ("verified", "provisional") if args.include_provisional else ("verified",)
     by_hash = {c["car_hash"]: c for c in data["cars"]}
     cars_dir = Path(args.cars_dir)
@@ -349,7 +349,7 @@ def cmd_sync(args):
           (len(rows), len(local), "verified + provisional" if args.include_provisional else "verified only", CLOUD_CSV.name))
     if counts:
         print("Classes: " + ", ".join("%s=%d" % (k, counts[k]) for k in sorted(counts, key=class_sort_key)))
-    print("%d cars have no usable cloud class yet -> %s (benchmark them, then upload)" % (len(missing), MISSING.name))
+    print("%d cars have no server class yet, listed in %s (benchmark them, then upload)" % (len(missing), MISSING.name))
 
 
 def main():

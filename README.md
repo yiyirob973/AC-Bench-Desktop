@@ -5,14 +5,12 @@ runner, an in-game Lua logger and the local result handling.
 
 ## How it works
 
-Every car is benchmarked the same way:
+Every car is benchmarked under the same conditions, and the server decides what they are: the tracks, the number of
+laps, the AI settings, the weather and the rest. The app fetches them from the server before every benchmark, vanilla
+check and upload, and none of it can be changed here. A car's score on a track comes from the median of its timed laps
+(lap 1 is a standing start and is dropped).
 
-- Tracks: only vanilla Kunos tracks (Magione and Vallelunga Club Circuit)
-- AI: 100% level, 0% aggression
-- Conditions: clear weather, 22°C air, 28°C road, no wind, 12:00
-- Score: median of 3 timed laps (lap 1 is a standing start and is dropped)
-
-Because all of that is fixed, lap times from different cars and different PCs can be compared directly.
+Because everything is fixed by the server, times from different cars and different PCs can be compared directly.
 
 ## What's in here
 
@@ -81,8 +79,10 @@ the server about just those and writes the same `#Pride-<class>` tags, using the
 
 - It never runs in online races, or in benchmark races.
 - In offline races it only works while your car is stopped, and pauses when you start driving.
-- The first run over a big collection takes a while because every car has to be hashed. After that, only cars that
-  changed are hashed again.
+- It's deliberately slow: it waits a minute after the race loads, then does one small step every half second (one car
+  hashed or one tag written at a time). The first run over a big collection takes a few minutes because every car has to
+  be hashed. After that, only cars that changed are hashed again.
+- After a check it doesn't run again for 6 hours. **Check now** in the in-game window runs it right away.
 - There's a checkbox in Settings to turn it off. The server address and options reach the Lua app through
   `config.json`, which is written when you press *Install / update required files*. Run that again after changing the
   server address.
@@ -134,7 +134,7 @@ redo every track of the cars they apply to.
 
 On the device that's already registered: Setup > **Create link code for another device** (or `python ac_cloud.py link`).
 On the new device: Setup > **Use the same account on another device**, enter the code and press **Sign in** (or
-`python ac_cloud.py login --code=XXXX-XXXX-XXXX`). The code works once and for 10 minutes. Each device gets its own key
+`python ac_cloud.py login --code=XXXX-XXXX-XXXX`). The code works once and expires after a few minutes. Each device gets its own key
 for the same account, saved in its own `cloud_config.json`.
 
 ## Creating the track reference (server operator)

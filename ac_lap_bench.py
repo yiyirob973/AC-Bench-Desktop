@@ -131,13 +131,13 @@ def auto_upload(args, res_path, ac, car_names):
     import ac_cloud
     ns = argparse.Namespace(server=args.server, results=str(res_path), log=str(res_path.with_name("track_check_log.json")),
                             cars_dir=str(ac / "content" / "cars"), all=False, attest_legacy=False)
-    print(f"    uploading {len(car_names)} car(s) to the server ...", flush=True)
+    print(f"    uploading {len(car_names)} car(s) to the server...", flush=True)
     try:
         ac_cloud.upload_results(ns, only_cars=set(car_names))
     except SystemExit as e:
-        print(f"    upload failed: {e}. The times are saved; the Upload button sends them later.", flush=True)
+        print(f"    upload failed: {e}. The times are saved, the Upload button can send them later.", flush=True)
     except Exception as e:
-        print(f"    upload failed: {type(e).__name__}: {e}. The times are saved; the Upload button sends them later.",
+        print(f"    upload failed: {type(e).__name__}: {e}. The times are saved, the Upload button can send them later.",
               flush=True)
 
 
@@ -220,9 +220,9 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
                         break
             if not warned and not result_file.exists() and now - start > 120:
                 warned = True
-                print("    note: the in-game logger has not reported yet. Open the \"AC Bench\" app in the "
-                      "apps sidebar and check its status, or see custom_shaders_patch.log for lines with ac_bench. If AC is "
-                      "sitting on the pre-race screen, check the start-race hotkey (Setup tab > Test start hotkey).", flush=True)
+                print("    note: the in-game logger hasn't reported yet. Open the \"AC Bench\" app in the apps sidebar to see its "
+                      "status, or look for ac_bench lines in custom_shaders_patch.log. If AC is stuck on the pre-race "
+                      "screen, check the start hotkey (Setup tab > Test start hotkey).", flush=True)
             if not started and attempts < args.start_attempts:
                 if now - start > args.start_delay and now - last_try > args.start_interval:
                     last_try, attempts = now, attempts + 1
@@ -377,8 +377,8 @@ def main():
     # a car without a skins folder can't go on the grid (DLC car you don't own, or an incomplete install), so say so
     no_skin = [c for c in cars if not first_skin(c)]
     if no_skin:
-        print(f"{len(no_skin)} selected car(s) cannot be raced: no skins folder in content\\cars\\<car>\\skins "
-              "(an unowned DLC car or an incomplete install): "
+        print(f"{len(no_skin)} selected car(s) can't be raced: no skins folder in content\\cars\\<car>\\skins "
+              "(a DLC car you don't own, or an incomplete install): "
               + ", ".join(c.name for c in no_skin[:12]) + (" ..." if len(no_skin) > 12 else ""), flush=True)
         cars = [c for c in cars if c not in no_skin]
         if not args.dry_run:
@@ -483,13 +483,13 @@ def main():
     if args.auto_upload:
         import ac_cloud
         if not ac_cloud.load_json(ac_cloud.CFG_FILE, {}).get("api_key"):
-            print("Automatic upload is on, but this PC is not registered with the server yet (Setup tab): the times "
-                  "are only saved here. Register, then use the Upload button.", flush=True)
+            print("Automatic upload is on, but this PC isn't registered yet (Setup tab), so the times are only saved here. "
+                  "Register, then use the Upload button.", flush=True)
             args.auto_upload = False
 
     if not args.skip_track_check:
         import ac_track_check as tc
-        print("Checking that the benchmark tracks are vanilla ...", flush=True)
+        print("Checking the benchmark tracks...", flush=True)
         res = tc.verify(ac, list(dict.fromkeys(s for s, _, _ in plan)), args.reference,
                         template=None, ignore_ui=args.ignore_ui_files)
         env_id, env = tc.make_env(res, bl.PROFILE_ID) if res["status"] == "ok" else (None, None)

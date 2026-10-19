@@ -169,7 +169,7 @@ def cmd_tag(args):
         ih = local_hashes(base, ids, lambda n, t: print("  hashed %d / %d" % (n, t), flush=True))
         if not ih:
             raise LiveUnavailable("None of the installed cars has physics files to identify it by.")
-        print("Asking the server about those %d car(s) only ..." % len(ih), flush=True)
+        print("Asking the server about %d car(s)..." % len(ih), flush=True)
         live = lookup(args.server, ih.values())
     except LiveUnavailable as e:
         raise SystemExit(str(e))

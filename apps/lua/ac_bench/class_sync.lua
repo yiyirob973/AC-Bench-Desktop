@@ -11,16 +11,18 @@
 local M = {}
 
 local PREFIX_MIN = 3
-local START_DELAY = 20          -- seconds after the race loads before the first check
+local START_DELAY = 60          -- seconds after the race loads before the first check
+local TICK = 0.5                -- the sync does a small step at most this often (seconds)
+local RECHECK_HOURS = 6         -- don't check again within this time (Check now ignores it)
+local CHEAP_STEPS = 10          -- cached or unchanged cars that may be skipped in one step
 local BATCH = 500               -- hashes per lookup request, same as the desktop app
-local WRITES_PER_FRAME = 4
 local MOVING_KMH = 2          -- the player's car has to be slower than this before any work happens
 
 local dir
 local cfg = { server = '', include_provisional = false, auto = true, prefix = '#Pride-' }
-local state = { hashes = {}, table_version = nil }   -- hashes[carId] = { sig = string, hash = hex }
+local state = { hashes = {}, table_version = nil, last_check = nil }   -- hashes[carId] = { sig = string, hash = hex }
 local st = {
-  phase = 'wait', note = 'starting', elapsed = 0,
+  phase = 'wait', note = 'starting', elapsed = 0, acc = 0,
   ids = {}, i = 0, hashOf = {}, batches = {}, b = 0, pending = false,
   labels = {}, todo = {}, t = 0,
   n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0 },
@@ -282,6 +284,7 @@ local function loadState()
   if ok and type(c) == 'table' and type(c.hashes) == 'table' then
     state.hashes = c.hashes
     state.table_version = c.table_version
+    state.last_check = tonumber(c.last_check)
   end
 end
 
@@ -294,6 +297,7 @@ local function saveState()
     end
   end
   writeFile(dir .. '/class_sync_state.json', '{"table_version":' .. tostring(tonumber(state.table_version) or 'null') ..
+    ',"last_check":' .. tostring(tonumber(state.last_check) or 'null') ..
     ',"hashes":{' .. table.concat(parts, ',') .. '}}')
 end
 
@@ -329,38 +333,43 @@ local function doScan()
 end
 
 local function doHash()
-  -- one car per frame. The first run over a big collection takes a while, later runs only re-hash cars that changed.
-  st.i = st.i + 1
-  local id = st.ids[st.i]
-  if not id then
-    saveState()
-    local seen, list = {}, {}
-    for _, h in pairs(st.hashOf) do
-      if not seen[h] then seen[h] = true list[#list + 1] = h end
+  -- Cars with a valid cached hash are quick to skip. Hashing a car costs real time, so only one is done per step.
+  for _ = 1, CHEAP_STEPS do
+    st.i = st.i + 1
+    local id = st.ids[st.i]
+    if not id then
+      saveState()
+      local seen, list = {}, {}
+      for _, h in pairs(st.hashOf) do
+        if not seen[h] then seen[h] = true list[#list + 1] = h end
+      end
+      table.sort(list)
+      for k = 1, #list, BATCH do
+        local b = {}
+        for j = k, math.min(k + BATCH - 1, #list) do b[#b + 1] = list[j] end
+        st.batches[#st.batches + 1] = b
+      end
+      if #st.batches == 0 then setPhase('done', 'couldn\'t identify any car') return end
+      setPhase('lookup', 'asking the server')
+      return
     end
-    table.sort(list)
-    for k = 1, #list, BATCH do
-      local b = {}
-      for j = k, math.min(k + BATCH - 1, #list) do b[#b + 1] = list[j] end
-      st.batches[#st.batches + 1] = b
+    local parts = physicsFiles(M.carsDir .. '/' .. id)
+    if #parts > 0 then
+      local sig = signature(parts)
+      local cached = state.hashes[id]
+      local h
+      local fresh = false
+      if type(cached) == 'table' and cached.hash and (cached.sig == sig or sig == 'n/a') then
+        h = cached.hash
+      else
+        h = carHash(parts)
+        if h then state.hashes[id] = { sig = sig, hash = h } st.n.hashed = st.n.hashed + 1 fresh = true end
+      end
+      if h then st.hashOf[id] = h end
+      st.note = string.format('checking cars %d / %d', st.i, #st.ids)
+      if fresh then return end
     end
-    if #st.batches == 0 then setPhase('done', 'couldn\'t identify any car') return end
-    setPhase('lookup', 'asking the server')
-    return
   end
-  local parts = physicsFiles(M.carsDir .. '/' .. id)
-  if #parts == 0 then return end
-  local sig = signature(parts)
-  local cached = state.hashes[id]
-  local h
-  if type(cached) == 'table' and cached.hash and (cached.sig == sig or sig == 'n/a') then
-    h = cached.hash
-  else
-    h = carHash(parts)
-    if h then state.hashes[id] = { sig = sig, hash = h } st.n.hashed = st.n.hashed + 1 end
-  end
-  if h then st.hashOf[id] = h end
-  st.note = string.format('checking cars %d / %d', st.i, #st.ids)
 end
 
 local function doLookup()
@@ -406,10 +415,12 @@ local function doLookup()
 end
 
 local function doApply()
-  for _ = 1, WRITES_PER_FRAME do
+  -- Reading a car that's already right is cheap. Writing a tag isn't, so only one is written per step.
+  for _ = 1, CHEAP_STEPS do
     st.t = st.t + 1
     local job = st.todo[st.t]
     if not job then
+      state.last_check = os.time and os.time() or nil
       saveState()
       setPhase('done', string.format('done, %d tag(s) written, %d already right', st.n.tagged, st.n.same))
       log(st.note)
@@ -420,8 +431,9 @@ local function doApply()
     elseif r == 'same' then st.n.same = st.n.same + 1
     elseif r == 'error' then st.n.errors = st.n.errors + 1
     else st.n.skipped = st.n.skipped + 1 end
+    st.note = string.format('writing tags %d / %d', st.t, #st.todo)
+    if r == 'changed' then return end
   end
-  st.note = string.format('writing tags %d / %d', st.t, #st.todo)
 end
 
 -- ---------------------------------------------------------------- public API
@@ -437,6 +449,8 @@ function M.init()
     setPhase('off', 'no server address, open the desktop app once so it can write config.json')
   elseif not cfg.auto then
     setPhase('off', 'automatic tagging is off (use Check now)')
+  elseif os.time and state.last_check and math.abs(os.time() - state.last_check) < RECHECK_HOURS * 3600 then
+    setPhase('done', 'checked recently, use Check now to run it again')
   end
 end
 
@@ -458,6 +472,9 @@ end
 function M.update(dt)
   local p = st.phase
   if p == 'off' or p == 'done' then return end
+  st.acc = st.acc + dt
+  if st.acc < TICK then return end
+  dt, st.acc = st.acc, 0
   local g = gate()
   if g == 'online' then setPhase('off', 'online race, class tagging doesn\'t run online') return end
   if g == 'unknown' then setPhase('off', 'can\'t tell if this is an offline race, so doing nothing') return end
