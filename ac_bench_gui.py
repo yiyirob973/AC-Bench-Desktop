@@ -61,7 +61,7 @@ DEFAULTS = {
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "", "probe_all_tracks": False,
     "start_delay": 25, "auto_upload": True,
-    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
+    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "lua_auto_tags": True, "cloud_attest": True,
 }
 
 LOCAL_FILTERS = ["All", "Done", "Not done", "Partial", "Failed", "Old settings"]
@@ -136,6 +136,25 @@ def install_bundled_lua_app(ac_dir, say=print):
         say("WARNING: extra Lua/ini files in the logger's folder may change its behaviour: " + ", ".join(extras) + "\n")
     after = ac_track_check.hash_tree(dst)
     return all(after.get(f) == want[f] for f in want)
+
+
+def write_lua_config(ac_dir, c):
+    """Tell the in-game Lua app which server to ask and how (config.json beside the logger). The Lua app uses it to
+    keep the #Pride-<class> tags current. Only written when it changed. -> True if the file is up to date."""
+    dst = Path(ac_dir) / "apps" / "lua" / BUNDLED_LUA_APP.name
+    if not dst.is_dir():
+        return False
+    want = json.dumps({"server": str(c.get("cloud_url", "")).strip().rstrip("/"),
+                       "include_provisional": bool(c.get("cloud_prov")),
+                       "auto": bool(c.get("lua_auto_tags")), "prefix": TAG_PREFIX}, indent=2)
+    f = dst / "config.json"
+    try:
+        if f.is_file() and f.read_text(encoding="utf-8") == want:
+            return True
+        f.write_text(want, encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def bundled_car_state(ac_dir):
@@ -613,6 +632,7 @@ def main():
         except OSError as e:
             messagebox.showerror("Lua logger", f"Could not install the bundled Lua logger: {e}")
             return None
+        write_lua_config(c["ac_dir"], c)
         if not lua_ok:
             messagebox.showwarning("Lua logger", "The bundled Lua logger could not be installed correctly "
                                                  "(see the log). Reinstall or restore the app files.")
@@ -846,6 +866,8 @@ def main():
     ttk.Label(sg, textvariable=cloud_stat, style="Bold.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
     ttk.Checkbutton(sg, text="Also use classes backed by a single submission (less reliable)",
                     variable=vars_["cloud_prov"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 0))
+    ttk.Checkbutton(sg, text="In-game app keeps car class tags up to date automatically (applied by 'Install required')",
+                    variable=vars_["lua_auto_tags"]).grid(row=5, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
     def do_cloud(action):
         c = cfg()

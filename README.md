@@ -19,7 +19,7 @@ This isolation lets you compare car performance directly without setup, weather,
 - **Benchmark runner** (`ac_lap_bench.py`, `ac_baseline.py`): generates and executes fixed-baseline races
 - **Car tools** (`ac_carid.py`, `ac_car_classifier.py`, `ac_rating.py`): identifies cars by physics hash and rates them
 - **Track validation** (`ac_track_check.py`): verifies vanilla tracks and environment
-- **Lua logger** (`apps/lua/ac_bench/`): in-game script that logs AI lap times
+- **Lua logger** (`apps/lua/ac_bench/`): in-game script that logs AI lap times and, outside benchmark races, keeps the `#Pride-<class>` car tags current from the server (`class_sync.lua`, configured by `config.json` that the app writes on 'Install required')
 - **Upload client** (`ac_cloud.py`): prepares and sends results to the server
 TV Car to ensure consistency in the runs across multiple instances
 - TV Car by EmilioGQ https://www.overtake.gg/downloads/tv-car.45108/
@@ -77,6 +77,7 @@ AC-Bench-Desktop/
   ac_track_check.py
   apps/lua/ac_bench/
     ac_bench.lua
+    class_sync.lua
     manifest.ini
 ```
 

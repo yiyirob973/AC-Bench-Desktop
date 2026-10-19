@@ -2,7 +2,7 @@
 -- Records lap times of every AI car (CAR_1..CAR_n) to result.json in this app's folder.
 -- Read by ac_lap_bench.py. It ONLY acts in benchmark races: those are recognised by the
 -- AI drivers being named "ACBENCH n" (set by ac_lap_bench.py). In every other race it
--- does nothing. Has a small status window ("AC Bench" in the apps sidebar).
+-- only keeps car class tags up to date (class_sync.lua). Has a small status window ("AC Bench" in the apps sidebar).
 
 local MARKER = 'ACBENCH'
 local PARK_PLAYER = true      -- experimental: send the idle player car to the pits (benchmark races only)
@@ -14,6 +14,14 @@ local out = {}                -- out[i] = true while AI car i is retired or has 
 local started, first = false, true
 local elapsed, parked = 0, false
 local active, why = nil, ''
+local okSync, sync = pcall(require, 'class_sync')   -- keeps the car class tags current (never runs in benchmark races)
+if okSync and sync then
+  local okInit, e = pcall(sync.init)
+  if not okInit then ac.log('ac_bench: class_sync init failed: ' .. tostring(e)) sync = nil end
+else
+  ac.log('ac_bench: class_sync not loaded: ' .. tostring(sync))
+  sync = nil
+end
 local status = { mode = 'checking...', save = 'not written yet', park = PARK_PLAYER and 'waiting' or 'off', cars = 0, laps = 0 }
 
 local function scriptDir()
@@ -81,7 +89,13 @@ function script.update(dt)
     ac.log('ac_bench: ' .. status.mode)
     elapsed = 0
   end
-  if not active then return end
+  if not active then
+    if sync then
+      local okU, e = pcall(sync.update, dt)
+      if not okU then ac.log('ac_bench: class_sync error: ' .. tostring(e)) sync = nil end
+    end
+    return
+  end
 
   local sim = ac.getSim()
   local n = (sim and sim.carsCount) or 2
@@ -142,5 +156,8 @@ function script.windowMain(dt)
     ui.text('Race running: ' .. tostring(started))
     ui.text('Result file: ' .. status.save)
     ui.text('Player to pits: ' .. status.park)
+  elseif sync then
+    ui.separator()
+    pcall(sync.ui)
   end
 end
