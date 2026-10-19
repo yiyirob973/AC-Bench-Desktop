@@ -51,7 +51,7 @@ def read_ui(car_dir):
 
 
 def peak_hp_from_lut(path):
-    """power.lut is rpm|torque(Nm). Naturally-aspirated curve only (ignores turbo)."""
+    """power.lut holds rpm|torque (Nm). Naturally aspirated curve only; turbo is ignored."""
     best = 0.0
     try:
         for line in path.read_text(errors="ignore").splitlines():
@@ -71,7 +71,7 @@ def analyze(car_dir):
     data = car_dir / "data"
     notes = []
 
-    hp = num(specs.get("bhp", ""))          # prefer UI value: includes turbo
+    hp = num(specs.get("bhp", ""))          # the UI value is better, it includes turbo
     mass = num(specs.get("weight", ""))
     grip = None
 
@@ -112,8 +112,9 @@ def analyze(car_dir):
 
 
 def class_label(n):
-    """Class number -> label. Two-letter codes (AA, AB, ...) made a search for class "A" match other classes,
-    so labels are <group><letter>: 1 -> 1A (top class), 2 -> 1B, ... 26 -> 1Z, 27 -> 2A, ... 52 -> 2Z, 53 -> 3A."""
+    """Class number to label. Two-letter codes (AA, AB, ...) made a search for class "A" match other classes, so labels are
+    <group><letter>: 1 is 1A (top class), 2 is 1B, ... 26 is 1Z, 27 is 2A, ... 52 is 2Z, 53 is 3A.
+    """
     if n < 1:
         return ""
     return "%d%s" % ((n - 1) // 26 + 1, chr(65 + (n - 1) % 26))
@@ -129,7 +130,7 @@ def class_sort_key(label):
 
 
 def norm_class(v):
-    """Class value from a CSV -> label. Old numeric CSVs (1, 2, 3) become 1A, 1B, 1C."""
+    """Turn a class value from a CSV into a label. Old numeric CSVs (1, 2, 3) become 1A, 1B, 1C."""
     s = str(v).strip()
     return class_label(int(s)) if s.isdigit() else s.upper()
 

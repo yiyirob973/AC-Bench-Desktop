@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""
-Write class tags into each car's ui/ui_car.json (shown as tags in Content Manager).
+"""Writes class tags into each car's ui/ui_car.json (they show up as tags in Content Manager).
 
     ac_tag_writer.py CARS_DIR CLASSES_CSV [--prefix #Pride-] [--also-remove PREFIX ...] [--exclude REGEX] [--apply]
     ac_tag_writer.py CARS_DIR [--prefix #Pride-] [--also-remove PREFIX ...] --untag [--apply]
     ac_tag_writer.py CARS_DIR --restore
 
-Without --apply it is a dry run. Duplicate protection:
-  * every tag that starts with the prefix (or with an --also-remove prefix, e.g. tags of an older version) is
-    removed first, then exactly ONE class tag is added, so applying
-    twice, or after a car changed class, never leaves two class tags behind;
-  * the whole tag list is de-duplicated (case-insensitive, first spelling kept, order kept);
-  * a file is only rewritten when its tag list actually changes, and written atomically;
-  * the first backup (ui_car.json.gridbak) is never overwritten, so --restore always returns the ORIGINAL file.
+Without --apply it's a dry run. Tags never pile up:
+  * every tag that starts with the prefix (or an --also-remove prefix, e.g. tags from an older version) is removed
+    first and then exactly one class tag is added, so applying twice, or after a car changed class, can't leave two
+    class tags behind;
+  * the whole tag list is de-duplicated (case-insensitive, first spelling and the order are kept);
+  * a file is only rewritten when its tag list really changes, and it's written atomically;
+  * the first backup (ui_car.json.gridbak) is never overwritten, so --restore always brings back the original file.
 """
 import ac_paths
 import argparse, csv, json, os, re, sys, tempfile
@@ -26,7 +25,7 @@ def norm(tag):
 
 
 def dedupe(tags):
-    """Drop repeated tags (case/whitespace-insensitive), keeping the first one and the order."""
+    """Drop repeated tags (ignoring case and whitespace), keeping the first one and the order."""
     seen, out = set(), []
     for t in tags:
         key = norm(t) if isinstance(t, str) else None
@@ -39,8 +38,7 @@ def dedupe(tags):
 
 
 def new_tags(existing, prefix, label, untag=False, also_remove=()):
-    """Tag list after removing every tag with this prefix (or an also_remove prefix) and, unless untag, adding
-    the single class tag."""
+    """The tag list after removing every tag with this prefix (or an also_remove prefix) and, unless untag, adding the single class tag."""
     prefixes = tuple(norm(x) for x in (prefix, *also_remove) if x.strip())
     kept = [t for t in existing if not (isinstance(t, str) and norm(t).startswith(prefixes))]
     if not untag:
@@ -49,7 +47,7 @@ def new_tags(existing, prefix, label, untag=False, also_remove=()):
 
 
 def read_classes(path):
-    """{car id: class label} from the classes CSV (last row wins if an id repeats)."""
+    """{car id: class label} from the classes CSV (the last row wins if an id repeats)."""
     out = {}
     with open(path, newline="", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
@@ -87,7 +85,7 @@ def restore(cars_dir):
 
 
 def main(argv=None, labels=None):
-    """labels: {car id: class} supplied by the caller (ac_live.py tag); then no classes CSV is needed."""
+    """labels is {car id: class} from the caller (ac_live.py tag). In that case no classes CSV is needed."""
     ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cars_dir")
@@ -146,7 +144,7 @@ def main(argv=None, labels=None):
         if not a.apply:
             continue
         bak = Path(str(f) + ".gridbak")
-        if not bak.exists():  # keep the first (original) backup
+        if not bak.exists():  # keep the first backup, it is the original
             write_atomic(bak, raw)
         data["tags"] = tags
         out = json.dumps(data, indent=4, ensure_ascii=False).encode("utf-8")

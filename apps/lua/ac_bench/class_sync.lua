@@ -1,25 +1,26 @@
--- AC Bench class sync (module of the AC Bench CSP Lua app)
--- Keeps the "#Pride-<class>" tag in every installed car's ui/ui_car.json current:
---   1. identifies each installed car by its physics hash (same SHA-256 recipe as ac_carid.py in the desktop app),
---   2. asks the server about those hashes only (POST /v1/cars/lookup; the answer is kept in memory, never saved),
---   3. writes exactly ONE class tag per car (any older "#Pride-..." tag is replaced, other tags are untouched),
---      keeping the first original backup as ui_car.json.gridbak so the desktop app's "Restore" still works.
--- It never runs in a benchmark race (ac_bench.lua only calls update() when the race is not a benchmark).
--- Settings come from config.json beside this file (written by the desktop app): server, include_provisional, auto.
+-- Class sync, part of the AC Bench Lua app.
+-- Keeps the "#Pride-<class>" tag in every installed car's ui/ui_car.json up to date:
+--   1. works out each car's physics hash (same SHA-256 recipe as ac_carid.py in the desktop app),
+--   2. asks the server about those hashes only (POST /v1/cars/lookup, the answer stays in memory),
+--   3. writes one class tag per car. An older "#Pride-..." tag is replaced and other tags are left alone. The first
+--      original is kept as ui_car.json.gridbak, so the desktop app's Restore still works.
+-- ac_bench.lua only calls update() outside benchmark races, and gate() below also skips online races and any time the
+-- player is driving.
+-- Settings are read from config.json next to this file (the desktop app writes it): server, include_provisional, auto.
 
 local M = {}
 
 local PREFIX_MIN = 3
 local START_DELAY = 20          -- seconds after the race loads before the first check
-local BATCH = 500               -- hashes per lookup request (same as the desktop app)
+local BATCH = 500               -- hashes per lookup request, same as the desktop app
 local WRITES_PER_FRAME = 4
-local MOVING_KMH = 2          -- the player's car must be slower than this for any work to happen
+local MOVING_KMH = 2          -- the player's car has to be slower than this before any work happens
 
 local dir
 local cfg = { server = '', include_provisional = false, auto = true, prefix = '#Pride-' }
 local state = { hashes = {}, table_version = nil }   -- hashes[carId] = { sig = string, hash = hex }
 local st = {
-  phase = 'wait', note = 'starting...', elapsed = 0,
+  phase = 'wait', note = 'starting', elapsed = 0,
   ids = {}, i = 0, hashOf = {}, batches = {}, b = 0, pending = false,
   labels = {}, todo = {}, t = 0,
   n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0 },
@@ -74,7 +75,7 @@ local function sha256(s)
 end
 
 -- ---------------------------------------------------------------- car identity (mirrors ac_carid.car_hash)
--- Python sorts the data/ files by path components, not by the joined string; do the same.
+-- Python sorts the data/ files by path parts, not by the joined string, so do the same here.
 local function splitPath(s)
   local t = {}
   for part in s:gmatch('[^/]+') do t[#t + 1] = part end
@@ -98,7 +99,7 @@ local function collect(base, rel, out)
   end
 end
 
--- list of { rel = 'data.acd' | 'data/x' | 'collider.ini', path = full } in the order the hash uses
+-- list of { rel = 'data.acd' | 'data/x' | 'collider.ini', path = full }, in the order the hash uses
 local function physicsFiles(carDir)
   local parts = {}
   if isFile(carDir .. '/data.acd') then parts[#parts + 1] = { rel = 'data.acd', path = carDir .. '/data.acd' } end
@@ -136,7 +137,7 @@ local function carHash(parts)
   return sha256(table.concat(buf))
 end
 
--- ---------------------------------------------------------------- tag editing (text-level, keeps the file otherwise intact)
+-- ---------------------------------------------------------------- tag editing (works on the text, so the rest of the file stays as it was)
 local function decodeString(token)
   local ok, v = pcall(JSON.parse, token)
   if ok and type(v) == 'string' then return v end
@@ -147,7 +148,7 @@ local function encodeString(s)
   return '"' .. s:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
 end
 
--- Finds the tags array. -> openIdx, closeIdx, { {raw=, val=}, ... }  |  nil, nil, nil (no tags key)  |  false, reason
+-- Finds the tags array. Returns openIdx, closeIdx, { {raw=, val=}, ... }, or nil if there is no tags key, or false and a reason.
 local function findTags(raw)
   local from = 1
   while true do
@@ -181,7 +182,7 @@ local function findTags(raw)
   end
 end
 
--- -> newRaw | nil (nothing to change) | false, reason
+-- Returns the new file text, nil if nothing needs to change, or false and a reason.
 local function withClassTag(raw, prefix, label)
   local bom = ''
   if raw:sub(1, 3) == '\239\187\191' then bom, raw = raw:sub(1, 3), raw:sub(4) end
@@ -192,7 +193,7 @@ local function withClassTag(raw, prefix, label)
   local open, close, items = findTags(raw)
   if open == false then return false, close end
 
-  if open == nil then   -- no tags key: add one before the final }
+  if open == nil then   -- no tags key, add one before the final }
     local last = raw:match('.*()}')
     if not last then return false, 'no closing brace' end
     local before = raw:sub(1, last - 1):gsub('%s+$', '')
@@ -306,7 +307,7 @@ local function begin()
   st.ids, st.i, st.hashOf, st.batches, st.b, st.pending = {}, 0, {}, {}, 0, false
   st.labels, st.todo, st.t = {}, {}, 0
   st.n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0 }
-  setPhase('scan', 'looking for installed cars...')
+  setPhase('scan', 'looking for installed cars')
 end
 
 local function doScan()
@@ -324,11 +325,11 @@ local function doScan()
   end
   table.sort(st.ids)
   st.n.cars = #st.ids
-  setPhase('hash', 'identifying cars...')
+  setPhase('hash', 'checking installed cars')
 end
 
 local function doHash()
-  -- one car per frame: the first run over a big collection takes a while, later runs only re-hash changed cars
+  -- one car per frame. The first run over a big collection takes a while, later runs only re-hash cars that changed.
   st.i = st.i + 1
   local id = st.ids[st.i]
   if not id then
@@ -343,8 +344,8 @@ local function doHash()
       for j = k, math.min(k + BATCH - 1, #list) do b[#b + 1] = list[j] end
       st.batches[#st.batches + 1] = b
     end
-    if #st.batches == 0 then setPhase('done', 'no car could be identified') return end
-    setPhase('lookup', 'asking the server...')
+    if #st.batches == 0 then setPhase('done', 'couldn\'t identify any car') return end
+    setPhase('lookup', 'asking the server')
     return
   end
   local parts = physicsFiles(M.carsDir .. '/' .. id)
@@ -359,7 +360,7 @@ local function doHash()
     if h then state.hashes[id] = { sig = sig, hash = h } st.n.hashed = st.n.hashed + 1 end
   end
   if h then st.hashOf[id] = h end
-  st.note = string.format('identifying cars %d / %d', st.i, #st.ids)
+  st.note = string.format('checking cars %d / %d', st.i, #st.ids)
 end
 
 local function doLookup()
@@ -367,14 +368,14 @@ local function doLookup()
   st.b = st.b + 1
   local hashes = st.batches[st.b]
   if not hashes then
-    -- all answers are in: build the work list
+    -- all answers are in, build the work list
     for id, h in pairs(st.hashOf) do
       local label = st.labels[h]
       if label then st.todo[#st.todo + 1] = { id = id, label = label } end
     end
     table.sort(st.todo, function(a, b) return a.id < b.id end)
     st.n.known = #st.todo
-    setPhase('apply', 'writing class tags...')
+    setPhase('apply', 'writing class tags')
     return
   end
   st.pending = true
@@ -389,7 +390,7 @@ local function doLookup()
         okBody, data = pcall(JSON.parse, response.body)
       end
       if not okBody or type(data) ~= 'table' then
-        setPhase('done', 'server not reachable or answered with an error (' .. tostring(err or (response and response.status)) .. ')')
+        setPhase('done', 'server unreachable or returned an error (' .. tostring(err or (response and response.status)) .. ')')
         st.n.errors = st.n.errors + 1
         return
       end
@@ -410,7 +411,7 @@ local function doApply()
     local job = st.todo[st.t]
     if not job then
       saveState()
-      setPhase('done', string.format('done: %d tag(s) written, %d already correct', st.n.tagged, st.n.same))
+      setPhase('done', string.format('done, %d tag(s) written, %d already right', st.n.tagged, st.n.same))
       log(st.note)
       return
     end
@@ -420,7 +421,7 @@ local function doApply()
     elseif r == 'error' then st.n.errors = st.n.errors + 1
     else st.n.skipped = st.n.skipped + 1 end
   end
-  st.note = string.format('writing class tags %d / %d', st.t, #st.todo)
+  st.note = string.format('writing tags %d / %d', st.t, #st.todo)
 end
 
 -- ---------------------------------------------------------------- public API
@@ -431,16 +432,15 @@ function M.init()
   loadConfig()
   loadState()
   if type(ac.checksumSHA256) ~= 'function' then
-    setPhase('off', 'this CSP version has no ac.checksumSHA256: cars cannot be identified')
+    setPhase('off', 'this CSP version has no ac.checksumSHA256, so cars can\'t be identified')
   elseif cfg.server == '' then
-    setPhase('off', 'no server address: open the desktop app once (it writes config.json)')
+    setPhase('off', 'no server address, open the desktop app once so it can write config.json')
   elseif not cfg.auto then
-    setPhase('off', 'automatic tagging is switched off (use Check now)')
+    setPhase('off', 'automatic tagging is off (use Check now)')
   end
 end
 
--- called every frame by ac_bench.lua, only when the race is NOT a benchmark race
--- -> 'ok' | 'online' | 'unknown' | 'moving'
+-- Returns 'ok', 'online', 'unknown' or 'moving'.
 local function gate()
   local sim = ac.getSim()
   if not sim then return 'unknown' end
@@ -454,14 +454,15 @@ local function gate()
   return 'ok'
 end
 
+-- called every frame by ac_bench.lua, but only outside benchmark races
 function M.update(dt)
   local p = st.phase
   if p == 'off' or p == 'done' then return end
   local g = gate()
-  if g == 'online' then setPhase('off', 'online race: class tagging never runs online') return end
-  if g == 'unknown' then setPhase('off', 'cannot tell if this is an offline race: doing nothing') return end
+  if g == 'online' then setPhase('off', 'online race, class tagging doesn\'t run online') return end
+  if g == 'unknown' then setPhase('off', 'can\'t tell if this is an offline race, so doing nothing') return end
   if g == 'moving' then
-    if p ~= 'wait' then st.note = 'paused while driving (continues when stopped)' end
+    if p ~= 'wait' then st.note = 'paused while driving, continues when you stop' end
     return
   end
   if p == 'wait' then
@@ -478,7 +479,7 @@ end
 function M.ui()
   ui.text('Class tags: ' .. st.note)
   if st.phase == 'done' or st.phase == 'apply' then
-    ui.text(string.format('cars %d, known to server %d, tagged %d, already ok %d, problems %d',
+    ui.text(string.format('%d cars, %d known to the server, %d tagged, %d already right, %d problems',
       st.n.cars, st.n.known, st.n.tagged, st.n.same, st.n.errors))
   end
   if type(ac.checksumSHA256) == 'function' and cfg.server ~= '' then

@@ -1,10 +1,9 @@
-"""
-Live server data for the Server cars list.
+"""Live server data for the Server cars list.
 
-Instead of downloading the whole class export and matching it by hand, the app hashes the cars that are
-installed here (cached, only changed cars are re-hashed) and asks the server about just those cars
-(POST /v1/cars/lookup, up to 500 hashes per request). The answer is current at the moment it is asked and is
-kept in memory only: nothing from the server's ratings is written to disk.
+Rather than downloading the whole class export and matching it by hand, the app hashes the cars installed on this PC
+(cached, only changed cars are re-hashed) and asks the server about just those (POST /v1/cars/lookup, up to 500 hashes
+per request). The answer is current when it's asked for and is kept in memory only. Nothing from the server's ratings is
+written to disk.
 """
 import json
 import threading
@@ -15,7 +14,7 @@ import ac_cloud
 
 import ac_paths  # noqa: E402
 HERE = ac_paths.DATA
-HASH_CACHE = HERE / "car_hash_cache.json"   # {car folder: {"sig": [...], "hash": hex or null}}: local hashes only
+HASH_CACHE = HERE / "car_hash_cache.json"   # {car folder: {"sig": [...], "hash": hex or null}}, local hashes only
 BATCH = 500
 
 
@@ -24,7 +23,7 @@ class LiveUnavailable(Exception):
 
 
 def _sig(car_dir):
-    """Cheap change signature of a car's physics files (stat only, nothing is read)."""
+    """Cheap change signature for a car's physics files (stat only, nothing is read)."""
     out = []
     for name in ("data.acd", "collider.ini"):
         p = car_dir / name
@@ -85,8 +84,9 @@ def local_hashes(cars_dir, ids, progress=None, cancel=None):
 
 
 def lookup(server, hashes):
-    """Ask the server about these hashes. -> {"records": {hash: record}, "tracks": [...], "table_version": n,
-    "generated": unix time}. Raises LiveUnavailable with a readable reason."""
+    """Ask the server about these hashes. Returns {"records": {hash: record}, "tracks": [...], "table_version": n,
+    "generated": unix time}. Raises LiveUnavailable with a readable reason.
+    """
     if not server or not server.strip():
         raise LiveUnavailable("No server address set.")
     cfg = {"server": server.strip().rstrip("/")}
@@ -95,7 +95,7 @@ def lookup(server, hashes):
     for i in range(0, len(hashes), BATCH):
         try:
             code, data, _ = ac_cloud.call(cfg, "POST", "/v1/cars/lookup", {"hashes": hashes[i:i + BATCH]})
-        except SystemExit as e:           # ac_cloud.call reports network errors that way
+        except SystemExit as e:           # ac_cloud.call reports network errors this way
             raise LiveUnavailable(str(e))
         if code == 404:
             raise LiveUnavailable("The server is too old: it has no live lookup (/v1/cars/lookup). Update the server.")
@@ -111,7 +111,7 @@ def lookup(server, hashes):
 
 
 def to_rows_source(ids_to_hash, live):
-    """{folder id: csv-like row} in the shape ac_bench_gui.load_cloud_rows reads, for the cars the server knows."""
+    """{folder id: csv-like row} for the cars the server knows, in the shape ac_bench_gui.load_cloud_rows reads."""
     out = {}
     for cid, h in ids_to_hash.items():
         rec = live["records"].get(h)
@@ -129,8 +129,9 @@ def to_rows_source(ids_to_hash, live):
 
 
 def fetch_async(server, cars_dir, ids, on_progress, on_done):
-    """Hash + look up on a worker thread. on_progress(text) and on_done(result_or_None, error_or_None) are called
-    from that thread: the caller must hand them to the UI thread (root.after)."""
+    """Hash and look up on a worker thread. on_progress(text) and on_done(result_or_None, error_or_None) are called from
+    that thread, so the caller has to hand them over to the UI thread (root.after).
+    """
     def work():
         try:
             ih = local_hashes(cars_dir, ids, lambda n, t: on_progress("hashing cars %d / %d ..." % (n, t)))
@@ -141,7 +142,7 @@ def fetch_async(server, cars_dir, ids, on_progress, on_done):
             on_done({"by_id": to_rows_source(ih, live), "live": live, "hashed": len(ih)}, None)
         except LiveUnavailable as e:
             on_done(None, str(e))
-        except Exception as e:           # never let the worker die silently
+        except Exception as e:           # a worker thread must never die without saying why
             on_done(None, "%s: %s" % (type(e).__name__, e))
     t = threading.Thread(target=work, daemon=True)
     t.start()
@@ -149,8 +150,9 @@ def fetch_async(server, cars_dir, ids, on_progress, on_done):
 
 
 def cmd_tag(args):
-    """Apply class tags: find the cars installed HERE, ask the server about only those, tag only those.
-    Nothing is downloaded beyond the answer for the local cars and nothing is saved."""
+    """Apply class tags: find the cars installed on this PC, ask the server about only those and tag only those. Nothing is
+    downloaded beyond the answer for the local cars and nothing is saved.
+    """
     import argparse  # noqa: F401  (parsed by main)
     import re
     import ac_tag_writer

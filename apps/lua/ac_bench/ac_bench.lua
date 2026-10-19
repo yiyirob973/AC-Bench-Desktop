@@ -1,8 +1,8 @@
--- AC Bench Logger (CSP Lua app)
--- Records lap times of every AI car (CAR_1..CAR_n) to result.json in this app's folder.
--- Read by ac_lap_bench.py. It ONLY acts in benchmark races: those are recognised by the
--- AI drivers being named "ACBENCH n" (set by ac_lap_bench.py). In every other race it
--- only keeps car class tags up to date (class_sync.lua). Has a small status window ("AC Bench" in the apps sidebar).
+-- AC Bench logger (CSP Lua app)
+-- Writes the lap times of every AI car (CAR_1..CAR_n) to result.json in this app's folder, which ac_lap_bench.py reads.
+-- It only logs in benchmark races, which it recognises by the AI drivers being named "ACBENCH n" (ac_lap_bench.py sets
+-- that). In any other race all it does is keep the car class tags up to date (class_sync.lua).
+-- There's a small status window ("AC Bench" in the apps sidebar).
 
 local MARKER = 'ACBENCH'
 local PARK_PLAYER = true      -- experimental: send the idle player car to the pits (benchmark races only)
@@ -14,7 +14,7 @@ local out = {}                -- out[i] = true while AI car i is retired or has 
 local started, first = false, true
 local elapsed, parked = 0, false
 local active, why = nil, ''
-local okSync, sync = pcall(require, 'class_sync')   -- keeps the car class tags current (never runs in benchmark races)
+local okSync, sync = pcall(require, 'class_sync')   -- keeps the car class tags current (doesn't run in benchmark races)
 if okSync and sync then
   local okInit, e = pcall(sync.init)
   if not okInit then ac.log('ac_bench: class_sync init failed: ' .. tostring(e)) sync = nil end
@@ -42,7 +42,7 @@ local function detectBench()
   if ok and type(name) == 'string' then
     return name:sub(1, #MARKER) == MARKER, 'driver name'
   end
-  -- driver-name API unavailable: fall back to a flag file that ac_lap_bench.py keeps while it runs
+  -- no driver-name API, so use the flag file ac_lap_bench.py keeps while it runs
   if flagPath then
     local ok2, res = pcall(function() return io.load(flagPath, nil) end)
     if ok2 and res ~= nil then return true, 'flag file' end
@@ -113,9 +113,9 @@ function script.update(dt)
   local changed = false
   for i = 1, n - 1 do
     local car = ac.getCar(i)
-    local gone = (car == nil)          -- vanished from the race
+    local gone = (car == nil)          -- gone from the race
     if car then
-      local okR, retired = pcall(function() return car.isRetired end)   -- not in every CSP version, ignored if missing
+      local okR, retired = pcall(function() return car.isRetired end)   -- not in every CSP version, skipped if missing
       if okR and retired == true then gone = true end
       if not started and car.speedKmh and car.speedKmh > 20 then
         started = true

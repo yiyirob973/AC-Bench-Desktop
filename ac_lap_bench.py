@@ -1,34 +1,30 @@
 #!/usr/bin/env python3
-"""
-Automated lap benchmark for Assetto Corsa (Windows, Steam running, CSP installed).
+"""Automated lap benchmark for Assetto Corsa (Windows, Steam running, CSP installed).
 
-Runs short AI races: several test cars per launch (a "batch"), the in-game
-logger app writes their lap times to result.json, this script reads them, kills
-AC and starts the next batch. Results are saved after every batch.
+Runs short AI races with several test cars per launch (a "batch"). The in-game logger app writes their lap times to
+result.json, this script reads them, kills AC and starts the next batch. Results are saved after every batch.
 
-BASELINE: tracks, laps, AI level/aggression and all race conditions (weather, temperature, grip,
-wind, time) are pinned in ac_baseline.py and written into every race, whatever the template says.
-A car's score is the MEDIAN of its timed laps (lap 1 dropped); best_ms is only the fastest timed lap.
-Results are tagged with the baseline profile and the batch size. --batch 1 (default) means no
-other car shares the track: the cleanest baseline.
+Baseline: tracks, laps, AI level/aggression and every race condition (weather, temperature, grip, wind, time) are pinned
+in ac_baseline.py and written into every race, whatever the template says. A car's score is the median of its timed
+laps (lap 1 dropped), best_ms is just the fastest timed lap. Results are tagged with the baseline profile and the batch
+size. --batch 1 (the default) means no other car shares the track, which gives the cleanest baseline.
 
-Cars that already have a valid result for a track are SKIPPED. Use --rerun to
-force: bare `--rerun` redoes every selected car, `--rerun car_a car_b` only those.
+Cars that already have a valid result for a track are skipped. --rerun forces it: a bare `--rerun` redoes every selected
+car, `--rerun car_a car_b` only those. --probe rebenchmarks the cars you name, but only on tracks where they have no
+valid time yet. Add --all-tracks to redo every track.
 
-SETUP (once)
+Setup (once)
  1. Copy apps/lua/ac_bench into <AC>/apps/lua/ (so it has ac_bench.lua + manifest.ini).
- 2. In Content Manager set up a Quick Drive RACE: any player car, exactly 1 AI
-    opponent, then press Drive once (conditions are pinned by the tool). Copy
-    Documents/Assetto Corsa/cfg/race.ini to template_race.ini.
- 3. Probe (all tracks):  python ac_lap_bench.py --template template_race.ini --probe ks_mazda_mx5_cup ks_abarth_500_assetto_corsa
+ 2. In Content Manager set up a Quick Drive race with any player car and exactly 1 AI opponent, then press Drive once
+    (the tool pins the conditions). Copy Documents/Assetto Corsa/cfg/race.ini to template_race.ini.
+ 3. Probe:  python ac_lap_bench.py --template template_race.ini --probe ks_mazda_mx5_cup ks_abarth_500_assetto_corsa
  4. Full:   python ac_lap_bench.py --template template_race.ini --batch 10 --group-by car_classes.csv
 
-Order: cars are grouped into PACKS of --batch cars; a pack runs on EVERY track before the next pack
-starts, so cars get fully rated pack by pack.
-Speed: --batch N puts N test cars in one race (capped by the track's pit boxes).
-Cars in a batch can bump into each other, so --group-by sorts them so similar-pace
-cars share a batch (use the estimate CSV from ac_car_classifier.py; for later
-tracks, times already measured on earlier tracks are used instead).
+Order: cars are grouped into packs of --batch cars. A pack runs on every track before the next pack starts, so cars get
+fully rated pack by pack.
+Speed: --batch N puts N test cars in one race (capped by the track's pit boxes). Cars in a batch can bump into each
+other, so --group-by sorts them so cars of similar pace share a batch. Use the estimate CSV from ac_car_classifier.py;
+on later tracks the times already measured on earlier tracks are used instead.
 
 Then: python ac_classify_laps.py lap_results.json CARS_DIR
 """
@@ -38,8 +34,8 @@ from pathlib import Path
 DEFAULT_AC = r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa"
 import ac_baseline as bl      # tracks, laps, AI settings and race conditions are pinned there
 import ac_rating as rating    # lap scoring: lap 1 dropped, median of the timed laps
-import ac_paths               # where user data lives (beside the exe) vs files shipped inside it
-import ac_carid               # car identity (hash of the physics files), used by the cloud upload
+import ac_paths               # where user data lives (next to the exe) vs files shipped inside it
+import ac_carid               # car identity (hash of the physics files), used for the upload
 
 
 # ---------- files ----------
@@ -114,12 +110,12 @@ def apply_batch(cp, base_car, batch, spec, laps):
         cp[sec].update(base_car)
         cp[sec].update(bl.AI_CAR)
         cp[sec].update({"MODEL": car, "SKIN": skin,
-                        "DRIVER_NAME": f"ACBENCH {i}"})   # marker: the in-game logger only acts in these races
+                        "DRIVER_NAME": f"ACBENCH {i}"})   # marker: the in-game logger only acts in races with this name
     for s in cp.sections():
         if s.startswith("SESSION_") and cp.get(s, "TYPE", fallback="") == "3":
             cp[s]["LAPS"] = str(laps)
     cp["RACE"]["AI_LEVEL"] = bl.AI_LEVEL
-    for sec, kv in bl.CONDITIONS.items():           # pinned conditions, whatever the template says
+    for sec, kv in bl.CONDITIONS.items():           # pinned conditions override the template
         if sec not in cp:
             cp.add_section(sec)
         cp[sec].update(kv)
@@ -128,8 +124,9 @@ def apply_batch(cp, base_car, batch, spec, laps):
 
 
 def auto_upload(args, res_path, ac, car_names):
-    """Send the times of the cars that just finished to the server. Never stops the benchmark: if it fails, the times
-    stay saved and the Upload button (or the next successful upload) sends them."""
+    """Send the times of the cars that just finished to the server. It never stops the benchmark: if it fails, the times stay
+    saved and the Upload button (or the next successful upload) sends them.
+    """
     import argparse
     import ac_cloud
     ns = argparse.Namespace(server=args.server, results=str(res_path), log=str(res_path.with_name("track_check_log.json")),
@@ -166,9 +163,9 @@ def _identity(args, ac, car, entry):
 
 
 def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
-    apply_batch(cp, base_car, batch, spec, bl.RACE_LENGTH_LAPS)   # race never ends by itself, see ac_baseline.py
+    apply_batch(cp, base_car, batch, spec, bl.RACE_LENGTH_LAPS)   # the race never ends by itself, see ac_baseline.py
     write_ini(cp, race_ini)
-    try:      # copy next to the results so you can see exactly what was run
+    try:      # keep a copy next to the results so it's clear what was run
         shutil.copy2(race_ini, Path(getattr(args, "results", "lap_results.json")).with_name("last_race.ini"))
     except Exception:
         pass
@@ -182,10 +179,10 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
     last_change, seen, laps, reason = start, 0, {}, "timeout"
     started, attempts, last_try, warned = False, 0, 0.0, False
     race_t0 = None                       # when the race actually got going
-    still, out_set = set(), set()        # cars standing still / retired or vanished, as reported by the logger
-    lap_n, lap_t = {}, {}                # laps logged per car and when that count last changed
+    still, out_set = set(), set()        # cars standing still, and cars retired or gone, as reported by the logger
+    lap_n, lap_t = {}, {}                # laps logged per car, and when that count last changed
     still_since, out_since = {}, {}
-    gave_up = {}                         # car index -> why we stopped waiting for it (retired, stuck, ...)
+    gave_up = {}                         # car index: why we stopped waiting for it (retired, stuck, ...)
     stuck_s = getattr(args, "stuck", 30)
     first_lap = getattr(args, "first_lap", 240)
     lap_min = getattr(args, "lap_wait_min", 60)
@@ -201,7 +198,7 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
                 try:
                     d = json.loads(result_file.read_text(encoding="utf-8"))
                 except Exception:
-                    d = None                      # file mid-write
+                    d = None                      # the file is being written
                 if d:
                     cur = {e["idx"]: e.get("laps_ms", []) for e in d.get("cars", [])
                            if expected.get(e.get("idx")) == e.get("car")}
@@ -237,7 +234,7 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
                     if attempts == 1:
                         print("    start hotkey: " + ("sent" if found else "AC window not found yet"), flush=True)
 
-            # Retired / stuck / vanished cars: stop waiting for them so the run moves on.
+            # Retired, stuck or vanished cars: stop waiting for them so the run moves on.
             if started and race_t0 is not None:
                 known = [laps[i][-1] / 1000 for i in laps if len(laps[i]) >= 2]
                 ref_s = statistics.median(known) if known else None
@@ -275,14 +272,14 @@ def run_batch(args, ac, race_ini, result_file, cp, base_car, batch, spec):
     finally:
         kill_ac(proc)
     if reason == "stopped":
-        raise KeyboardInterrupt      # unfinished batch is not recorded
+        raise KeyboardInterrupt      # an unfinished batch is not recorded
 
     out = {}
     for i, car in expected.items():
         l = laps.get(i, [])
         if len(l) >= args.laps:
-            l = l[:args.laps]            # score exactly the same laps for every car, whatever the leaders did after
-            flying = l[1:] if len(l) > 1 else l          # drop standing-start lap
+            l = l[:args.laps]            # score the same laps for every car, whatever the leaders did after
+            flying = l[1:] if len(l) > 1 else l          # drop the standing-start lap
             score, n_timed = rating.lap_score({"laps_ms": l, "best_ms": min(flying)})
             out[car] = {"status": "ok", "best_ms": min(flying), "score_ms": score, "timed_laps": n_timed,
                         "laps_ms": l, "profile": bl.PROFILE_ID, "batch": len(batch)}
@@ -321,7 +318,7 @@ def main():
     ap.add_argument("--probe", nargs="+", metavar="CAR_ID",
                     help="rebenchmark these cars (even if already rated), but only on the tracks where they have no valid time yet")
     ap.add_argument("--all-tracks", action="store_true",
-                    help="with --probe: redo EVERY track for these cars, even tracks they already have a valid time on")
+                    help="with --probe: redo every track for these cars, even ones they already have a valid time on")
     ap.add_argument("--dry-run", action="store_true", help="only count jobs")
     ap.add_argument("--start-delay", type=int, default=25,
                     help="seconds after AC is launched before the first press of the Start race hotkey")
@@ -333,16 +330,16 @@ def main():
     ap.add_argument("--reference", default=str(ac_paths.DATA / "track_reference.json"),
                     help="vanilla track reference made by ac_track_check.py create")
     ap.add_argument("--skip-track-check", action="store_true",
-                    help="do NOT verify the tracks are vanilla (ratings may not be comparable)")
+                    help="skip the vanilla track check (ratings may not be comparable)")
     ap.add_argument("--ignore-ui-files", action="store_true",
                     help="vanilla check: ignore files under each track's ui/ folder")
     ap.add_argument("--stop-file", help="graceful stop: if this file appears, kill AC, keep results, exit")
     args = ap.parse_args()
 
     if args.probe:
-        args.batch = max(args.batch, len(args.probe))     # probe = one launch per track
+        args.batch = max(args.batch, len(args.probe))     # a probe is one launch per track
 
-    args.tracks, args.laps = list(bl.TRACKS), bl.LAPS        # hard-coded baseline
+    args.tracks, args.laps = list(bl.TRACKS), bl.LAPS        # the baseline is fixed
     ac = Path(args.ac_dir)
     if not (ac / "acs.exe").exists():
         sys.exit(f"acs.exe not found in {ac}; pass --ac-dir")
@@ -377,7 +374,7 @@ def main():
     res_path = Path(args.results)
     results = load_results(res_path)
 
-    # a car without a skins folder cannot be put on the grid (unowned DLC car or incomplete install): say so loudly
+    # a car without a skins folder can't go on the grid (DLC car you don't own, or an incomplete install), so say so
     no_skin = [c for c in cars if not first_skin(c)]
     if no_skin:
         print(f"{len(no_skin)} selected car(s) cannot be raced: no skins folder in content\\cars\\<car>\\skins "
@@ -411,12 +408,12 @@ def main():
                 best_ms[t] = r["best_ms"]
 
     def pace(car):
-        """Sort key so similar-pace cars share a pack: measured gap if known, else the estimate."""
+        """Sort key so cars of similar pace share a pack: the measured gap if known, otherwise the estimate."""
         gaps = [(r["best_ms"] / best_ms[t] - 1) * 100 for t, r in results.get(car, {}).items()
                 if r.get("status") == "ok" and t in best_ms]
         return sum(gaps) / len(gaps) if gaps else est.get(car, 0.0)
 
-    # Which (car, track) jobs are still to do
+    # which (car, track) jobs are still to do
     todo, done_skip, fail_skip = {}, 0, 0
     for c in cars:
         for spec in specs:
@@ -432,7 +429,7 @@ def main():
             else:
                 todo.setdefault(c.name, []).append(spec)
 
-    # One pack = the cars launched together. Its size must fit on every track.
+    # A pack is the cars launched together. Its size has to fit on every track.
     size = max(args.batch, 1)
     for spec in specs:
         pb = pitboxes(ac, spec)
@@ -441,7 +438,7 @@ def main():
             size = pb - 1
     size = max(size, 1)
 
-    # PACK-MAJOR order: a pack runs on EVERY track before the next pack starts, so cars are
+    # Pack by pack: a pack runs on every track before the next pack starts, so cars are
     # finished (rated on both tracks) pack by pack instead of track by track.
     by_name = {c.name: c for c in cars}
     names = sorted(todo, key=lambda n: (pace(n), n))
@@ -468,8 +465,8 @@ def main():
     if args.dry_run or not plan:
         return
 
-    # every race is started with AC's own "Start race" hotkey (controls.ini [__CM_START_SESSION]): an existing key of
-    # the user is used, F12 is set only when nothing is set
+    # every race is started with AC's own "Start race" hotkey (controls.ini [__CM_START_SESSION]). A key the user
+    # already set is used, F12 only when nothing is set
     try:
         import ac_input
         import ac_controls

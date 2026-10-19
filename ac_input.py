@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""
-Windows-only helper: find the Assetto Corsa window and press AC's "Start race" hotkey in it (Ctrl + the key set in
-controls.ini, see ac_controls.py). ac_lap_bench.py uses it to get past the pre-race screen of every race; it is the
-only way the app starts a race, so there is no click position to calibrate.
+"""Windows-only helper: finds the Assetto Corsa window and presses AC's "Start race" hotkey in it (Ctrl + the key set in
+controls.ini, see ac_controls.py). ac_lap_bench.py uses it to get past the pre-race screen. It's the only way the app
+starts a race, so there is no click position to calibrate.
 
   python ac_input.py hotkey [--docs-dir "<Documents/Assetto Corsa>"]
       test: press the Start race hotkey once (AC open on the pre-race screen)
 
-Keys go to whatever is in front, so don't use the PC for other things while a benchmark runs.
+The keys go to whatever window is in front, so leave the PC alone while a benchmark runs.
 """
 import sys
 import time
@@ -17,7 +16,7 @@ import ac_paths  # noqa: F401  (keeps the packaged build's module list complete)
 
 TITLE = "Assetto Corsa"
 CTRL = 0x11
-EXTENDED = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E}   # keys that need the extended-key flag
+EXTENDED = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E}   # these keys need the extended-key flag
 
 try:
     import ctypes
@@ -37,7 +36,7 @@ def _need_windows():
 
 
 def find_window(title=TITLE):
-    """Handle of the visible window titled exactly `title`, or None."""
+    """Handle of the visible window with exactly this title, or None."""
     _need_windows()
     found = []
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -57,7 +56,7 @@ def find_window(title=TITLE):
 
 
 def focus(hwnd):
-    user32.keybd_event(0x12, 0, 0, 0)       # tap Alt: lets us take the foreground
+    user32.keybd_event(0x12, 0, 0, 0)       # tapping Alt lets us take the foreground
     user32.keybd_event(0x12, 0, 2, 0)
     user32.ShowWindow(hwnd, 9)              # SW_RESTORE
     user32.SetForegroundWindow(hwnd)
@@ -71,7 +70,7 @@ def _key_event(vk, up=False):
 
 
 def press_combo(hwnd, vks):
-    """Hold the modifiers, tap the last key, release in reverse order: what a person pressing Ctrl+F12 does."""
+    """Hold the modifiers, tap the last key, release in reverse order, like a person pressing Ctrl+F12."""
     focus(hwnd)
     for vk in vks:
         _key_event(vk)
@@ -83,7 +82,7 @@ def press_combo(hwnd, vks):
 
 
 def start_race(vk):
-    """Press Ctrl+<vk> in the AC window. False if there is no AC window yet."""
+    """Press Ctrl+<vk> in the AC window. Returns False if there is no AC window yet."""
     hwnd = find_window()
     if not hwnd:
         return False

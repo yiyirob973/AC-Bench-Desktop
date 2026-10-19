@@ -1,30 +1,29 @@
-"""
-The benchmark baseline. The SERVER defines it (see ac_conditions.py): profile, tracks, lap counts and, through the
-server's "conditions" object, any race setting. Nothing the server decides is written in this file, and nothing here
-can be edited from the GUI. Attribute names are unchanged (PROFILE_ID, TRACKS, TIMED_LAPS, LAPS, AI_CAR, CONDITIONS,
-...), they are just resolved on first use from the last conditions fetched from the server. Without valid conditions
-(never fetched, older than 12 hours, other server) reading any of them raises ac_conditions.ConditionsUnavailable.
+"""The benchmark baseline. The server defines it (see ac_conditions.py): profile, tracks, lap counts and any race
+setting that comes through its "conditions" object. Nothing the server decides is hard-coded here and the GUI can't
+change any of it. The attribute names (PROFILE_ID, TRACKS, TIMED_LAPS, LAPS, AI_CAR, CONDITIONS, ...) are resolved on
+first use from the last conditions fetched from the server. If there are no usable conditions (never fetched, older than
+12 hours, or from another server), reading any of them raises ac_conditions.ConditionsUnavailable.
 
-What the server can send in its "conditions" object (same names as before; a section or dict the server sends
-replaces the built-in one completely):
-    AI_LEVEL, AI_AGGRESSION, RACE_LENGTH_LAPS                       scalars
-    DYNAMIC_TRACK, WEATHER, TEMPERATURE, LIGHTING, WIND              race.ini sections written in every race
+The server's "conditions" object can carry:
+    AI_LEVEL, AI_AGGRESSION, RACE_LENGTH_LAPS                       plain values
+    DYNAMIC_TRACK, WEATHER, TEMPERATURE, LIGHTING, WIND              race.ini sections written into every race
     AI_CAR                                                           written into every AI car section
     ASSISTS                                                          applied if the template has [ASSISTS]
-The server currently sends an empty object, so the built-in values below (the ones profile baseline-v2 was defined
-with) are used for these. They only apply to that profile: if the server moves to another profile it must send ALL of
-the keys above, otherwise the app refuses to run rather than label results with a profile it did not measure.
+A section the server sends replaces the built-in one completely. Right now the server sends an empty object, so the
+built-in values below (the ones profile baseline-v2 was defined with) are used. They only fit that profile. If the
+server moves to another profile it has to send all of the keys above, otherwise the app refuses to run instead of
+labelling results with a profile it didn't measure.
 """
 import copy, sys
 
 from ac_conditions import ConditionsUnavailable, load
 
-BUILTIN_PROFILE = "baseline-v2"   # the profile the built-in values below belong to
+BUILTIN_PROFILE = "baseline-v2"   # profile the built-in values below belong to
 
 _BUILTIN = {
     "AI_LEVEL": "100",
     "AI_AGGRESSION": "0",
-    "RACE_LENGTH_LAPS": 99,       # so long the race never finishes (see ac_lap_bench.py); only the first LAPS laps score
+    "RACE_LENGTH_LAPS": 99,       # long enough that the race never ends on its own (see ac_lap_bench.py); only the first LAPS laps count
     "DYNAMIC_TRACK": {"SESSION_START": "100", "RANDOMNESS": "0", "LAP_GAIN": "0", "SESSION_TRANSFER": "0"},
     "WEATHER": {"NAME": "3_clear"},
     "TEMPERATURE": {"AMBIENT": "22", "ROAD": "28"},
@@ -94,7 +93,7 @@ def __dir__():
 
 
 def reload():
-    """Forget the values read so far (the next access reads the cache again)."""
+    """Drop the values read so far; the next access reads the cache again."""
     global _state
     _state = None
 

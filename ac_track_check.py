@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""
-Vanilla track check. Makes sure the tracks used for benchmarking are identical to the environment the SERVER
-publishes, so lap-time ratings made on different AC installations stay comparable.
+"""Vanilla track check. Makes sure the tracks used for benchmarking are identical to the environment the server
+publishes, so lap-time ratings from different AC installs stay comparable.
 
 How it works
-  * The server's canonical environment (GET /v1/conditions -> env) holds one digest per benchmark track folder and the
-    SHA-256 of acs.exe. Players have no local reference file; only the server operator creates one ("create", see below).
-  * "verify" hashes EVERY file in content/tracks/<track>/ (all layouts, AI racing lines included), reduces them to the
-    same digest the server uses, and compares. It also hashes acs.exe (the AI driving code). Exit code 0 = identical.
-  * The server only keeps fingerprints, so a mismatch cannot list the files that differ. To get back to vanilla run
-    Steam > Assetto Corsa > Properties > Installed Files > Verify integrity (it restores changed or deleted Kunos
-    files; it does NOT remove extra files you added to the track folders, remove those yourself).
-  * The digest is tried over the whole folder first and, only if that does not match for every track, over the folder
-    without its ui/ subfolder, so it follows however the server's environment was made. This is automatic, not a setting.
+  * The server's canonical environment (GET /v1/conditions, "env") holds one digest per benchmark track folder and the
+    SHA-256 of acs.exe. Players have no local reference file. Only the server operator creates one ("create", below).
+  * "verify" hashes every file in content/tracks/<track>/ (all layouts, AI racing lines included), reduces them to the
+    same digest the server uses and compares. It also hashes acs.exe, which holds the AI driving code. Exit code 0
+    means identical.
+  * The server only keeps fingerprints, so a mismatch can't list which files differ. To get back to vanilla, run
+    Steam > Assetto Corsa > Properties > Installed Files > Verify integrity. That restores changed or deleted Kunos
+    files but doesn't remove extra files you added to the track folders, so remove those yourself.
+  * The digest is tried over the whole folder first. Only if that doesn't match for every track is it tried over the
+    folder without its ui/ subfolder, so it follows however the server's environment was made. That's automatic, there
+    is no setting for it.
 
-Warnings only (never block): CSP track config files in extension/config/tracks/ for these tracks.
+Warnings only, they never block: CSP track config files in extension/config/tracks/ for these tracks.
 
   python ac_track_check.py verify --ac-dir "<AC>"
   python ac_track_check.py create --ac-dir "<AC>" [--out track_reference.json]   (operator: make the reference)
-Exit codes: 0 identical / reference written, 2 different or incomplete install, 3 cannot (no usable data from the server).
+Exit codes: 0 identical / reference written, 2 different or incomplete install, 3 can't check (no usable data from the server).
 """
 import argparse, configparser, hashlib, json, os, sys, time
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 import ac_conditions
 import ac_paths
 
-JUNK = {"thumbs.db", "desktop.ini", ".ds_store"}          # OS clutter, never part of the game
+JUNK = {"thumbs.db", "desktop.ini", ".ds_store"}          # OS clutter, not part of the game
 COND_SECTIONS = ("DYNAMIC_TRACK", "WEATHER", "TEMPERATURE", "LIGHTING")
 
 
@@ -55,7 +56,7 @@ def file_info(p):
 
 
 def track_ids(specs):
-    """'ks_vallelunga/club_circuit' -> 'ks_vallelunga' (the whole track folder is checked)."""
+    """'ks_vallelunga/club_circuit' becomes 'ks_vallelunga' (the whole track folder is checked)."""
     return list(dict.fromkeys(s.strip().partition("/")[0] for s in specs if s.strip()))
 
 
@@ -70,7 +71,7 @@ def csp_files(ac, track):
 
 
 def conditions(template):
-    """Race sections of a race.ini (kept for older callers; the server's conditions are what counts now)."""
+    """Race sections of a race.ini. Kept for older callers; the server's conditions are what counts now."""
     cp = configparser.ConfigParser(strict=False, interpolation=None, delimiters=("=",))
     cp.optionxform = str
     with open(template, encoding="utf-8", errors="ignore") as f:
@@ -102,13 +103,14 @@ REFERENCE_FILE = ac_paths.DATA / "track_reference.json"
 
 
 def create(ac, out=None, say=print, server=None):
-    """OPERATOR ACTION: build the canonical track reference (the environment) from THIS install.
-    Which tracks to hash comes from the server (its published track list, no environment needed yet); the digests
-    are over the whole track folders, exactly as verify() computes them, plus the SHA-256 of acs.exe.
-    Writes `out` (default track_reference.json) as {"format": 1, "env": {profile, tracks, acs, ignore_ui}, ...},
-    which the server loads with:  python server.py set-env --from track_reference.json
-    The install must be vanilla (Steam > Verify integrity first, and remove extra files from the track folders).
-    -> {"status": ok | modified | noref, "path": ..., "env": ...}"""
+    """For the server operator: build the canonical track reference (the environment) from this install.
+    Which tracks to hash comes from the server (its published track list, no environment needed yet). The digests cover
+    the whole track folders, exactly as verify() computes them, plus the SHA-256 of acs.exe. Writes `out` (default
+    track_reference.json) as {"format": 1, "env": {profile, tracks, acs, ignore_ui}, ...}, which the server loads with
+    python server.py set-env --from track_reference.json
+    The install has to be vanilla (Steam > Verify integrity first, and remove extra files from the track folders).
+    Returns {"status": ok | modified | noref, "path": ..., "env": ...}
+    """
     out = Path(out) if out else REFERENCE_FILE
     result = {"status": "ok", "path": None, "env": None}
     try:
@@ -152,9 +154,10 @@ def create(ac, out=None, say=print, server=None):
 
 def verify(ac, specs=None, ref_path=None, template=None, ignore_ui=False, say=print):
     """Check this install against the environment the server publishes.
-    -> {"status": ok | modified | noref, "tracks": {t: {"files": n, "digest": ...}}, "warnings": [...], ...}
-    ref_path, template and ignore_ui are accepted for older callers and ignored: nothing here is chosen locally.
-    Every track of the server's baseline is checked, whatever `specs` lists."""
+    Returns {"status": ok | modified | noref, "tracks": {t: {"files": n, "digest": ...}}, "warnings": [...], ...}
+    ref_path, template and ignore_ui are accepted for older callers and ignored, nothing here is chosen locally.
+    Every track of the server's baseline is checked, whatever `specs` lists.
+    """
     result = {"status": "ok", "tracks": {}, "warnings": [], "ignore_ui": False}
     try:
         cond = ac_conditions.load()
@@ -245,8 +248,9 @@ def verify(ac, specs=None, ref_path=None, template=None, ignore_ui=False, say=pr
 
 
 def make_env(result, profile):
-    """Environment fingerprint of a passed check: which exact tracks + game executable the laps were driven on.
-    -> (short id, dict). Uploaded with results; the cloud server compares it with its canonical one."""
+    """Fingerprint of a passed check: which exact tracks and game executable the laps were driven on.
+    Returns (short id, dict). It's uploaded with the results and the server compares it with its canonical one.
+    """
     env = {"profile": profile, "ignore_ui": bool(result.get("ignore_ui")),
            "tracks": {t: v["digest"] for t, v in result["tracks"].items()},
            "acs": (result.get("game") or {}).get("acs.exe")}
@@ -255,7 +259,7 @@ def make_env(result, profile):
 
 
 def append_log(path, result, env_id=None, env=None):
-    """Keep a small history of checks next to the results (which install state was benchmarked)."""
+    """Keep a short history of checks next to the results (which install state was benchmarked)."""
     try:
         log = json.loads(Path(path).read_text(encoding="utf-8")) if Path(path).exists() else []
     except Exception:
@@ -273,7 +277,7 @@ def main():
     ap.add_argument("--ac-dir", required=True)
     ap.add_argument("--log", default=str(ac_paths.DATA / "track_check_log.json"),
                     help="append the result (with the environment id) to this log")
-    # accepted and ignored, so old command lines keep working; nothing about the baseline is chosen here
+    # accepted and ignored so old command lines keep working; the baseline is never chosen here
     ap.add_argument("--out", help="create: where to write the reference (default track_reference.json)")
     ap.add_argument("--reference", help=argparse.SUPPRESS)
     ap.add_argument("--template", help=argparse.SUPPRESS)
