@@ -4,33 +4,25 @@
   python ac_cloud.py ping     --server https://example.org
   python ac_cloud.py register --server https://example.org --invite CODE --name MyName
   python ac_cloud.py upload   --cars-dir "<AC>/content/cars" [--attest-legacy]
-  python ac_cloud.py sync     --cars-dir "<AC>/content/cars"           (add --include-provisional)
 
 upload: sends every benchmark result that was driven on the verified vanilla environment under the current baseline
         (lap_results.json + track_check_log.json). Results are matched to cars by the hash of the car's physics files,
         never by folder name. The server recomputes the scores and may reject entries; the reasons are printed.
-sync:   downloads the classes and matches every car in your library by that hash. Writes car_classes_cloud.csv (same
-        columns as car_classes.csv, so the grid builder and the tag writer can use it) and cloud_missing.txt (cars the
-        server has no usable class for yet: benchmark those and upload). The app no longer uses this, it looks cars up
-        live instead (ac_live.py).
 The server address and your API key are kept in cloud_config.json next to this file. The benchmark conditions (profile,
 tracks, laps, environment) are fetched from the server (ac_conditions.py) before an upload, none of it is set here.
 """
-import argparse, csv, json, sys, urllib.error, urllib.request
+import argparse, json, sys, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 import ac_paths  # noqa: E402
 HERE = ac_paths.DATA   # settings, results and caches live next to the exe (or the .py files)
-from ac_car_classifier import read_ui, num, class_sort_key   # noqa: E402
+from ac_car_classifier import read_ui, class_sort_key   # noqa: E402
 import ac_carid               # noqa: E402
 import ac_conditions          # noqa: E402  (profile, tracks, laps and environment all come from the server)
 
 CFG_FILE = HERE / "cloud_config.json"
 UPLOADED = HERE / "cloud_uploaded.json"
-CLOUD_JSON = HERE / "cloud_classes.json"
-CLOUD_CSV = HERE / "car_classes_cloud.csv"
-MISSING = HERE / "cloud_missing.txt"
 CHUNK = 400
 
 
@@ -292,66 +284,6 @@ def upload_results(args, only_cars=None):
                                          rec.get("status", ""), "" if gap is None else ", %.2f%% off the fastest" % gap))
 
 
-def cmd_sync(args):
-    cfg = settings(args)
-    code, data, headers = call(cfg, "GET", "/v1/classes", etag=cfg.get("classes_etag"))
-    if code == 304 and CLOUD_JSON.exists():
-        data = load_json(CLOUD_JSON, None)
-        print("Class data unchanged since the last download.")
-    elif code != 200:
-        raise SystemExit("Download failed: %s" % ((data or {}).get("error", code)))
-    else:
-        save_json(CLOUD_JSON, data)
-        cfg["classes_etag"] = headers.get("ETag")
-        save_json(CFG_FILE, cfg)
-    table = data.get("table")
-    if not table:
-        print("The server has no class table yet. The operator has to publish one.")
-    wanted = ("verified", "provisional") if args.include_provisional else ("verified",)
-    by_hash = {c["car_hash"]: c for c in data["cars"]}
-    cars_dir = Path(args.cars_dir)
-    tracks = data["tracks"]
-    fields = (["class", "id", "name", "hp", "mass_kg", "gap_pct", "score_pct"]
-              + ["time_" + t.replace("/", "_") for t in tracks] + ["delta_" + t.replace("/", "_") for t in tracks]
-              + ["variance_pct", "timed_laps", "flags", "bop", "notes", "cloud_status"])
-    rows, missing, counts = [], [], {}
-    local = sorted(d for d in cars_dir.iterdir() if d.is_dir()) if cars_dir.is_dir() else []
-    for n, d in enumerate(local, 1):
-        if n % 250 == 0:
-            print("  hashed %d / %d cars ..." % (n, len(local)), flush=True)
-        h = ac_carid.car_hash(d)
-        rec = by_hash.get(h) if h else None
-        if not rec or not table or rec.get("class") is None or rec["status"] not in wanted:
-            missing.append(d.name)
-            continue
-        ui = read_ui(d)
-        specs = ui.get("specs") or {}
-        hp, mass = num(specs.get("bhp", "")), num(specs.get("weight", ""))
-        row = {"class": rec["class"], "id": d.name, "name": ui.get("name", d.name),
-               "hp": str(round(hp)) if hp else "", "mass_kg": str(round(mass)) if mass else "",
-               "gap_pct": round(rec["gap_pct"], 3), "score_pct": round(rec["score_pct"], 3),
-               "variance_pct": round(rec["variance_pct"], 3), "timed_laps": "", "flags": "; ".join(rec["flags"]),
-               "bop": rec["bop"], "cloud_status": rec["status"],
-               "notes": "cloud class table v%s, %s" % (table["version"], rec["status"])}
-        for t in tracks:
-            key = t.replace("/", "_")
-            row["time_" + key] = round(rec["times_ms"][t] / 1000, 3)
-            row["delta_" + key] = round(rec["deltas"][t], 3)
-        rows.append(row)
-        counts[rec["class"]] = counts.get(rec["class"], 0) + 1
-    rows.sort(key=lambda r: (r["score_pct"], r["id"]))
-    with open(CLOUD_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
-    MISSING.write_text("\n".join(missing) + ("\n" if missing else ""), encoding="utf-8")
-    print("%d of %d cars in your library have a cloud class (%s) -> %s" %
-          (len(rows), len(local), "verified + provisional" if args.include_provisional else "verified only", CLOUD_CSV.name))
-    if counts:
-        print("Classes: " + ", ".join("%s=%d" % (k, counts[k]) for k in sorted(counts, key=class_sort_key)))
-    print("%d cars have no server class yet, listed in %s (benchmark them, then upload)" % (len(missing), MISSING.name))
-
-
 def main():
     ac_paths.utf8_output()
     ap = argparse.ArgumentParser(description="AC Bench cloud client")
@@ -372,14 +304,10 @@ def main():
     s.add_argument("--attest-legacy", action="store_true",
                    help="also upload results benchmarked before environments were stamped, if the track digests of all "
                         "older vanilla checks equal the current verified environment (run Verify tracks now first)")
-    s = sub.add_parser("sync")
-    s.add_argument("--cars-dir", required=True)
-    s.add_argument("--include-provisional", action="store_true",
-                   help="also use classes backed by a single submission (less reliable)")
     args = ap.parse_args()
     try:
         {"ping": cmd_ping, "register": cmd_register, "link": cmd_link, "login": cmd_login,
-         "upload": cmd_upload, "sync": cmd_sync}[args.command](args)
+         "upload": cmd_upload}[args.command](args)
     except ac_conditions.ConditionsUnavailable as e:
         raise SystemExit(str(e))
 

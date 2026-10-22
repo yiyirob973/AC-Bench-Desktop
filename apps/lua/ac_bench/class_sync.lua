@@ -4,25 +4,31 @@
 --   2. asks the server about those hashes only (POST /v1/cars/lookup, the answer stays in memory),
 --   3. writes one class tag per car. An older "#Pride-..." tag is replaced and other tags are left alone. The first
 --      original is kept as ui_car.json.gridbak, so the desktop app's Restore still works.
--- ac_bench.lua only calls update() outside benchmark races, and gate() below also skips online races and any time the
--- player is driving.
+-- ac_bench.lua only calls update() outside benchmark races, and gate() below also skips online races.
+-- It works while you drive too, in a way that shouldn't be noticeable: small steps a few times a second, nothing that
+-- takes more than a couple of milliseconds while the car is moving (big cars wait until you stop), and no steps at all
+-- while the frame rate is low.
 -- Settings are read from config.json next to this file (the desktop app writes it): server, include_provisional, auto.
 
 local M = {}
 
 local PREFIX_MIN = 3
-local START_DELAY = 60          -- seconds after the race loads before the first check
-local TICK = 0.5                -- the sync does a small step at most this often (seconds)
+local START_DELAY = 45          -- seconds after the race loads before the first check
+local TICK_STOPPED = 0.25       -- seconds between steps while the car is stopped
+local TICK_DRIVING = 0.75       -- seconds between steps while the car is moving
+local HEAVY_BYTES = 600 * 1024  -- while driving, cars with more physics data than this wait until you stop
+local SLOW_FRAME = 0.025        -- no steps while the smoothed frame time is above this (below about 40 fps)
 local RECHECK_HOURS = 6         -- don't check again within this time (Check now ignores it)
 local CHEAP_STEPS = 10          -- cached or unchanged cars that may be skipped in one step
-local BATCH = 500               -- hashes per lookup request, same as the desktop app
-local MOVING_KMH = 2          -- the player's car has to be slower than this before any work happens
+local BATCH = 250               -- hashes per lookup request (a smaller answer is cheaper to read)
+local MOVING_KMH = 2            -- at or above this speed the car counts as moving
 
 local dir
-local cfg = { server = '', include_provisional = false, auto = true, prefix = '#Pride-' }
+local cfg = { server = '', include_provisional = false, auto = false, prefix = '#Pride-' }
 local state = { hashes = {}, table_version = nil, last_check = nil }   -- hashes[carId] = { sig = string, hash = hex }
 local st = {
-  phase = 'wait', note = 'starting', elapsed = 0, acc = 0,
+  phase = 'wait', note = 'starting', elapsed = 0, acc = 0, fdt = 0.016, tick = TICK_STOPPED,
+  deferred = {}, incomplete = false,
   ids = {}, i = 0, hashOf = {}, batches = {}, b = 0, pending = false,
   labels = {}, todo = {}, t = 0,
   n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0 },
@@ -118,14 +124,15 @@ end
 local hasAttr = nil
 local function signature(parts)
   if hasAttr == nil then hasAttr = type(io.getAttributes) == 'function' end
-  if not hasAttr then return 'n/a' end
-  local sig = {}
+  if not hasAttr then return 'n/a', nil end
+  local sig, total = {}, 0
   for _, p in ipairs(parts) do
     local ok, a = pcall(io.getAttributes, p.path)
-    if not ok or type(a) ~= 'table' then return 'n/a' end
+    if not ok or type(a) ~= 'table' then return 'n/a', nil end
     sig[#sig + 1] = p.rel .. ':' .. tostring(a.size) .. ':' .. tostring(a.lastWriteTime)
+    total = total + (tonumber(a.size) or 0)
   end
-  return table.concat(sig, '|')
+  return table.concat(sig, '|'), total
 end
 
 local function carHash(parts)
@@ -309,6 +316,7 @@ end
 
 local function begin()
   st.ids, st.i, st.hashOf, st.batches, st.b, st.pending = {}, 0, {}, {}, 0, false
+  st.deferred, st.incomplete = {}, false
   st.labels, st.todo, st.t = {}, {}, 0
   st.n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0 }
   setPhase('scan', 'looking for installed cars')
@@ -332,41 +340,58 @@ local function doScan()
   setPhase('hash', 'checking installed cars')
 end
 
-local function doHash()
+local function startLookup()
+  saveState()
+  local seen, list = {}, {}
+  for _, h in pairs(st.hashOf) do
+    if not seen[h] then seen[h] = true list[#list + 1] = h end
+  end
+  table.sort(list)
+  for k = 1, #list, BATCH do
+    local b = {}
+    for j = k, math.min(k + BATCH - 1, #list) do b[#b + 1] = list[j] end
+    st.batches[#st.batches + 1] = b
+  end
+  if #st.batches == 0 then setPhase('done', 'couldn\'t identify any car') return end
+  setPhase('lookup', 'asking the server')
+end
+
+local function doHash(driving)
   -- Cars with a valid cached hash are quick to skip. Hashing a car costs real time, so only one is done per step.
+  -- While driving, a car with a lot of physics data is put off until the car is stopped.
   for _ = 1, CHEAP_STEPS do
-    st.i = st.i + 1
-    local id = st.ids[st.i]
-    if not id then
-      saveState()
-      local seen, list = {}, {}
-      for _, h in pairs(st.hashOf) do
-        if not seen[h] then seen[h] = true list[#list + 1] = h end
+    local id
+    if st.i < #st.ids then
+      st.i = st.i + 1
+      id = st.ids[st.i]
+    elseif #st.deferred > 0 then
+      if driving then
+        -- don't hold everything up: look up what we have, the big cars are picked up by the next check
+        st.incomplete = true
+        startLookup()
+        return
       end
-      table.sort(list)
-      for k = 1, #list, BATCH do
-        local b = {}
-        for j = k, math.min(k + BATCH - 1, #list) do b[#b + 1] = list[j] end
-        st.batches[#st.batches + 1] = b
-      end
-      if #st.batches == 0 then setPhase('done', 'couldn\'t identify any car') return end
-      setPhase('lookup', 'asking the server')
+      id = table.remove(st.deferred)
+    else
+      startLookup()
       return
     end
     local parts = physicsFiles(M.carsDir .. '/' .. id)
     if #parts > 0 then
-      local sig = signature(parts)
+      local sig, total = signature(parts)
       local cached = state.hashes[id]
       local h
       local fresh = false
       if type(cached) == 'table' and cached.hash and (cached.sig == sig or sig == 'n/a') then
         h = cached.hash
+      elseif driving and (total == nil or total > HEAVY_BYTES) then
+        st.deferred[#st.deferred + 1] = id
       else
         h = carHash(parts)
         if h then state.hashes[id] = { sig = sig, hash = h } st.n.hashed = st.n.hashed + 1 fresh = true end
       end
       if h then st.hashOf[id] = h end
-      st.note = string.format('checking cars %d / %d', st.i, #st.ids)
+      st.note = string.format('checking cars %d / %d', math.min(st.i, #st.ids), #st.ids)
       if fresh then return end
     end
   end
@@ -420,7 +445,7 @@ local function doApply()
     st.t = st.t + 1
     local job = st.todo[st.t]
     if not job then
-      state.last_check = os.time and os.time() or nil
+      if not st.incomplete then state.last_check = os.time and os.time() or nil end
       saveState()
       setPhase('done', string.format('done, %d tag(s) written, %d already right', st.n.tagged, st.n.same))
       log(st.note)
@@ -454,7 +479,7 @@ function M.init()
   end
 end
 
--- Returns 'ok', 'online', 'unknown' or 'moving'.
+-- Returns 'ok', 'online' or 'unknown', and whether the car is moving.
 local function gate()
   local sim = ac.getSim()
   if not sim then return 'unknown' end
@@ -464,30 +489,34 @@ local function gate()
   if online then return 'online' end
   local car = ac.getCar(0)
   if not car or car.speedKmh == nil then return 'unknown' end
-  if car.speedKmh >= MOVING_KMH then return 'moving' end
-  return 'ok'
+  return 'ok', car.speedKmh >= MOVING_KMH
 end
 
 -- called every frame by ac_bench.lua, but only outside benchmark races
 function M.update(dt)
   local p = st.phase
   if p == 'off' or p == 'done' then return end
+  st.fdt = st.fdt * 0.95 + dt * 0.05          -- smoothed frame time
   st.acc = st.acc + dt
-  if st.acc < TICK then return end
-  dt, st.acc = st.acc, 0
-  local g = gate()
+  if st.acc < st.tick then return end
+  local waited = st.acc
+  st.acc = 0
+  local g, driving = gate()
   if g == 'online' then setPhase('off', 'online race, class tagging doesn\'t run online') return end
   if g == 'unknown' then setPhase('off', 'can\'t tell if this is an offline race, so doing nothing') return end
-  if g == 'moving' then
-    if p ~= 'wait' then st.note = 'paused while driving, continues when you stop' end
-    return
-  end
+  st.tick = driving and TICK_DRIVING or TICK_STOPPED
   if p == 'wait' then
-    st.elapsed = st.elapsed + dt
+    st.elapsed = st.elapsed + waited
     st.note = string.format('first check in %ds', math.max(0, math.ceil(START_DELAY - st.elapsed)))
     if st.elapsed >= START_DELAY then begin() end
-  elseif p == 'scan' then doScan()
-  elseif p == 'hash' then doHash()
+    return
+  end
+  if st.fdt > SLOW_FRAME then
+    st.note = 'paused while the frame rate is low'
+    return
+  end
+  if p == 'scan' then doScan()
+  elseif p == 'hash' then doHash(driving)
   elseif p == 'lookup' then doLookup()
   elseif p == 'apply' then doApply()
   end

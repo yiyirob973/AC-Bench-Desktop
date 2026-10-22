@@ -85,13 +85,6 @@ def keep(files, ignore_ui):
     return {p: v for p, v in files.items() if p.split("/")[0].lower() != "ui"}
 
 
-def diff(ref, cur):
-    modified = sorted(p for p in ref if p in cur and ref[p] != cur[p])
-    missing = sorted(p for p in ref if p not in cur)
-    extra = sorted(p for p in cur if p not in ref)
-    return modified, missing, extra
-
-
 def digest(files):
     h = hashlib.sha256()
     for p in sorted(files):

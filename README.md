@@ -16,14 +16,14 @@ Because everything is fixed by the server, times from different cars and differe
 
 - `ac_bench_gui.py`: the GUI, for benchmarking, uploading and tagging
 - `ac_lap_bench.py`, `ac_baseline.py`: build and run the fixed-baseline races
-- `ac_carid.py`, `ac_car_classifier.py`, `ac_rating.py`: identify cars by physics hash and rate them
+- `ac_carid.py`, `ac_car_classifier.py`, `ac_rating.py`: identify cars by physics hash, read car data, rate results
 - `ac_track_check.py`: checks the vanilla tracks and `acs.exe`
 - `ac_cloud.py`, `ac_live.py`: talk to the server (upload, live car lookups)
 - `apps/lua/ac_bench/`: the in-game Lua app. It logs AI lap times during benchmark races. Otherwise it keeps the
   `#Pride-<class>` car tags up to date (`class_sync.lua`, set up by the `config.json` the app writes during
   *Install required files*).
 - `bundled_car/`: the TV Car by EmilioGQ (https://www.overtake.gg/downloads/tv-car.45108/), which every run drives so
-  results stay consistent between installs
+  results stay consistent between installs. It's never benchmarked itself, in any mode, and is never listed or tagged.
 
 ## Quick start
 
@@ -69,8 +69,7 @@ only kept in memory. This needs a server that has the lookup endpoint.
 **Apply server classes as tags** (or `python ac_live.py tag --server URL --cars-dir "<AC>/content/cars" --apply`) does
 its own lookup: it finds the cars installed on this PC, asks the server about only those and writes one `#Pride-<class>`
 tag into each car that has a verified class (provisional ones too, if enabled in Settings). The bundled car is skipped.
-Nothing is downloaded in bulk and no ratings file is written. `ui_car.json` is backed up first. The old
-`ac_cloud.py sync` download isn't used by the app any more.
+Nothing is downloaded in bulk and no ratings file is written. `ui_car.json` is backed up first.
 
 ### Tags from inside the game
 
@@ -78,14 +77,17 @@ The Lua app can do the same thing on its own. A short while after a race loads i
 the server about just those and writes the same `#Pride-<class>` tags, using the same backup rule.
 
 - It never runs in online races, or in benchmark races.
-- In offline races it only works while your car is stopped, and pauses when you start driving.
-- It's deliberately slow: it waits a minute after the race loads, then does one small step every half second (one car
-  hashed or one tag written at a time). The first run over a big collection takes a few minutes because every car has to
-  be hashed. After that, only cars that changed are hashed again.
+- It works while you drive too, in small steps: one car hashed or one tag written every 0.75 seconds (every 0.25
+  seconds when you're stopped). While the car is moving it only hashes cars with a small amount of physics data (under
+  about 600 KB), so no step takes more than a couple of milliseconds. Bigger cars wait for a later check or until you're
+  stopped, and it does nothing while the frame rate is below about 40 fps.
+- It waits 45 seconds after the race loads before it starts. The first run over a big collection takes a few minutes
+  because every car has to be hashed. After that, only cars that changed are hashed again.
 - After a check it doesn't run again for 6 hours. **Check now** in the in-game window runs it right away.
-- There's a checkbox in Settings to turn it off. The server address and options reach the Lua app through
-  `config.json`, which is written when you press *Install / update required files*. Run that again after changing the
-  server address.
+- It's off by default. Tick **Let the in-game app update car class tags by itself** on the Setup tab to turn it on.
+  The setting reaches the Lua app through `config.json`, which the app writes when you change the checkbox or the
+  server address and when you press *Install / update required files* (the Lua app has to be installed first). With it
+  off, **Check now** in the in-game window still runs a check by hand.
 - It needs a CSP version that has `ac.checksumSHA256`. If it's missing, the in-game window says so.
 
 ## Class labels
@@ -148,14 +150,18 @@ from a clean install: Steam > Verify integrity of game files, with no extra file
 The track list and profile come from the server's `/v1/conditions`, so no environment is needed yet. Load the file on the
 server with `python server.py set-env --from track_reference.json`. Players then verify against it.
 
-## Single portable exe
+## Portable exe
 
-`build_exe.bat` (or `pyinstaller --noconfirm AC-Bench.spec`) builds `dist\AC-Bench.exe` with PyInstaller. It needs
-`template_race.ini` in the folder and embeds it together with `bundled_car/` and `apps/lua/ac_bench/`.
+The GitHub workflow `.github/workflows/build.yml` builds `AC-Bench.exe` with **Nuitka**, which compiles the code to a
+native program (PyInstaller exes get flagged by antivirus products far more often). It needs `template_race.ini` in the
+repo and embeds it together with `bundled_car/` and `apps/lua/ac_bench/`.
 
-- **Embedded, read-only:** the race template, the benchmark car and the Lua logger are read from inside the exe. *Install
-  / update required files* on the Setup tab, and the automatic install before each benchmark, copy them from there into
-  Assetto Corsa. Nobody has to supply them.
+- By default it builds one file. Every push to `dev` publishes it to the rolling `dev-latest` GitHub Release (direct
+  download, with a `.sha256`). The Actions artifact holds the same file, wrapped in a zip because GitHub always does that.
+  Start the workflow by hand with **folder** ticked to get a folder build instead (for debugging).
+- **Embedded, read-only:** the race template, the benchmark car and the Lua logger are read from inside the exe.
+  *Install / update required files* on the Setup tab, and the automatic install before each benchmark, copy them from
+  there into Assetto Corsa.
 - **Written next to the exe:** settings, `lap_results.json`, `cloud_config.json`, caches and logs. Copy the folder and
   everything comes along. If that folder isn't writable (Program Files, say) the app uses `%LOCALAPPDATA%\AC-Bench`
   instead. Nothing is written to the temporary unpack folder, which is deleted when the app closes.
@@ -163,22 +169,6 @@ server with `python server.py set-env --from track_reference.json`. Players then
   benchmark, upload, vanilla check and tagging as child processes (same window, output in the log).
 - **From source** everything works the same (`run_gui.bat` or `python ac_bench_gui.py`). `ac_paths.py` is the one place
   that decides where files live.
-
-## Building without antivirus false positives
-
-PyInstaller output gets flagged by a lot of antivirus products, since every PyInstaller program carries the same
-well-known bootloader. So the GitHub workflow `.github/workflows/build.yml` uses **Nuitka**, which compiles the code to C
-and produces a native program:
-
-- By default it builds one file, `AC-Bench.exe`. Every push to `dev` publishes it to the rolling `dev-latest` GitHub
-  Release (direct download, with a `.sha256`). The Actions artifact holds the same file, wrapped in a zip because GitHub
-  always does that.
-- **Portable:** nothing is installed and nothing is left behind. While it runs, the exe unpacks itself into a temporary
-  folder and deletes it when it closes. Settings, results and caches go next to the exe, so you can move or copy it
-  anywhere, a USB stick for example. Only if the exe's folder is read-only does the app use `%LOCALAPPDATA%\AC-Bench`.
-  A single-file Python program can't avoid unpacking itself while it runs, that's what makes it one file.
-- Start the workflow by hand with **folder** ticked to get a folder build instead (for debugging).
-- The old PyInstaller build is still there as `build-pyinstaller.yml` (manual start only).
 - Every build checks the finished program (`--ac-selfcheck`: embedded template, car and Lua logger present, all modules
   importable) and starts a job through `--ac-run` before the artifact is uploaded.
 
@@ -195,10 +185,8 @@ AC-Bench-Desktop/
   ac_baseline.py
   ac_carid.py
   ac_car_classifier.py
-  ac_classify_laps.py
   ac_cloud.py
   ac_live.py
-  ac_grid_builder.py
   ac_input.py
   ac_lap_bench.py
   ac_rating.py

@@ -129,12 +129,6 @@ def class_sort_key(label):
     return (0, 0, len(s), s)
 
 
-def norm_class(v):
-    """Turn a class value from a CSV into a label. Old numeric CSVs (1, 2, 3) become 1A, 1B, 1C."""
-    s = str(v).strip()
-    return class_label(int(s)) if s.isdigit() else s.upper()
-
-
 def assign_classes(rows, gap_pct):
     rows.sort(key=lambda r: r["score"], reverse=True)
     best = rows[0]["score"]

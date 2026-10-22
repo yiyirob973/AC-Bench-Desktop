@@ -20,7 +20,7 @@ tags" writes the class tags (always "#Pride-<class>") from that data.
 
 Run it with: python ac_bench_gui.py   (tkinter comes with the python.org installer)
 """
-import csv, json, os, queue, re, shutil, subprocess, sys, threading
+import json, os, queue, re, shutil, subprocess, sys, threading
 from datetime import datetime
 from pathlib import Path
 
@@ -39,10 +39,6 @@ cond.ALLOW_STALE = True  # this process only: show the last known conditions whi
 CFG_FILE = HERE / "ac_bench_gui.json"
 STOP_FILE = HERE / "STOP"
 RESULTS = HERE / "lap_results.json"
-CLOUD_CLASSES = HERE / "car_classes_cloud.csv"
-CLOUD_MISSING = HERE / "cloud_missing.txt"
-# the server table that ac_cloud.py sync caches (the name must match what it leaves in this folder)
-CLOUD_TABLE = HERE / "cloud_classes.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 
 BUNDLED_CAR_DIR = RES / "bundled_car"    # holds one car folder, the car the benchmark drives; it gets installed into AC
@@ -58,7 +54,7 @@ DEFAULTS = {
     "batch": 1, "include": "", "exclude": "",
     "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "", "probe_all_tracks": False,
     "start_delay": 25, "auto_upload": True,
-    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "lua_auto_tags": True, "cloud_attest": True,
+    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "lua_auto_tags": False, "cloud_attest": True,
 }
 
 LOCAL_FILTERS = ["All", "Done", "Not done", "Partial", "Failed", "Old settings"]
@@ -73,11 +69,7 @@ def cars_dir(c):
 
 def bundled_car_id():
     """Folder name of the bundled benchmark car (bundled_car/<id>/), or None if there is none or more than one."""
-    try:
-        dirs = [p for p in BUNDLED_CAR_DIR.iterdir() if p.is_dir()]
-    except OSError:
-        return None
-    return dirs[0].name if len(dirs) == 1 else None
+    return ac_paths.bundled_car_id()
 
 
 def exclude_regex(user_regex=""):
@@ -339,44 +331,12 @@ def _num(v):
         return None
 
 
-def read_cloud_csv(csv_path):
-    """{car id: csv row} from the downloaded server classes (empty if the file isn't there)."""
-    by_id = {}
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                by_id[r.get("id", "")] = r
-    except OSError:
-        pass
-    return by_id
-
-
-def purge_downloaded():
-    """Delete the downloaded server ratings from disk and forget the download marker, so the next sync fetches the table fresh.
-    Otherwise the server would answer 'not modified' and there'd be nothing left to read.
-    """
-    for p in (CLOUD_CLASSES, CLOUD_TABLE):
-        try:
-            p.unlink()
-        except OSError:
-            pass
-    try:
-        j = json.loads(CLOUD_CFG.read_text(encoding="utf-8"))
-        gone = [k for k in j if "etag" in k.lower()]
-        for k in gone:
-            j.pop(k)
-        if gone:
-            CLOUD_CFG.write_text(json.dumps(j, indent=1), encoding="utf-8")
-    except (OSError, ValueError):
-        pass
-
-
 def load_cloud_rows(cars, source, tracks):
-    """Rows for the server car list. source is {car id: csv row} or a CSV path. Every car in the library gets a row, and cars
+    """Rows for the server car list. source is {car id: row}. Every car in the library gets a row, and cars
     the server has no usable class for show 'no server class'.
     """
     tracks = [t.strip() for t in tracks if t and t.strip()]
-    by_id = source if isinstance(source, dict) else read_cloud_csv(source)
+    by_id = source
     rows = []
     for cid, name in cars:
         r = by_id.get(cid)
@@ -498,6 +458,13 @@ def main():
     def save_cfg():
         CFG_FILE.write_text(json.dumps(cfg(), indent=1), encoding="utf-8")
 
+    def save_lua_settings():
+        """Save the settings and pass the in-game app's options on right away (only if its folder is installed)."""
+        save_cfg()
+        c = cfg()
+        if c["ac_dir"]:
+            write_lua_config(c["ac_dir"], c)
+
     # --- log (hidden by default) + process runner ---
     log_frame = ttk.Frame(root)
     log_head = ttk.Frame(log_frame)
@@ -513,7 +480,7 @@ def main():
     last_line = tk.StringVar(value="")
     q = queue.Queue()
     state = {"proc": None, "graceful": False, "on_done": None, "stopping": False,
-             "cars": [], "cars_dir": None, "server_by_id": {}, "server_stamp": "", "purge_pending": False,
+             "cars": [], "cars_dir": None, "server_by_id": {}, "server_stamp": "",
              "live_busy": False, "live_ok": False, "live_error": "", "live_at": 0.0, "live_msg": "", "live_found": 0}
     hooks = []  # called after every finished job (e.g. refresh the car lists)
     run_buttons = []
@@ -868,9 +835,9 @@ def main():
 
     ttk.Label(sg, textvariable=cloud_stat, style="Bold.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
     ttk.Checkbutton(sg, text="Also use classes based on a single submission (less reliable)",
-                    variable=vars_["cloud_prov"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 0))
-    ttk.Checkbutton(sg, text="In-game app keeps car class tags up to date (takes effect after 'Install / update required files')",
-                    variable=vars_["lua_auto_tags"]).grid(row=5, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
+                    variable=vars_["cloud_prov"], command=save_lua_settings).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 0))
+    ttk.Checkbutton(sg, text="Let the in-game app update car class tags by itself (off by default)",
+                    variable=vars_["lua_auto_tags"], command=save_lua_settings).grid(row=5, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
     def do_cloud(action):
         c = cfg()
@@ -1335,18 +1302,6 @@ def main():
         if cmd and cmd[0] == "ac_cloud.py" and "upload" in cmd and state.get("last_rc") == 0:
             live_refresh(force=True)
 
-    def purge_hook():
-        """After the tag step (or a failed download), remove the downloaded ratings from disk."""
-        if not state["purge_pending"]:
-            return
-        cmd = state.get("last_cmd") or []
-        name = cmd[0] if cmd else ""
-        if name == "ac_tag_writer.py" or (name == "ac_cloud.py" and state.get("last_rc") != 0):
-            state["purge_pending"] = False
-            purge_downloaded()
-            write("Downloaded ratings were removed from disk.\n")
-            cars_refresh()
-
     def do_missing():
         """Benchmark the installed cars the server has no class for yet (from the live server data)."""
         c = need_bench()
@@ -1404,7 +1359,6 @@ def main():
 
     hooks.append(lambda: refresh_cloud_status())
     hooks.append(lambda: refresh_setup())
-    hooks.append(purge_hook)
     hooks.append(upload_hook)
     hooks.append(conditions_hook)
     refresh_cloud_status()
@@ -1442,7 +1396,6 @@ def main():
             return
         if state["proc"]:
             stop()
-        purge_downloaded()
         save_cfg()
         root.destroy()
 
@@ -1455,7 +1408,6 @@ def main():
     if cfg()["cloud_url"].strip():
         root.after(400, lambda: refresh_conditions(quiet=True))
         root.after(1500, lambda: live_refresh(force=True))
-    purge_downloaded()  # don't leave downloaded server ratings on disk between sessions
     write("Ready.\n")
     poll()
     root.mainloop()
@@ -1474,9 +1426,6 @@ def script_command(cmd):
 def script_env():
     # the job processes have to keep settings and results in the same folder as this window
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1", AC_BENCH_DATA=str(ac_paths.DATA))
-    if ac_paths.FROZEN and hasattr(sys, "_MEIPASS"):
-        # a PyInstaller one-file exe that starts itself as a separate process has to unpack its own copy of the embedded files
-        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
 
 
@@ -1494,8 +1443,8 @@ def run_embedded_script(argv):
     sys.argv = [script, *rest]
     name = Path(script).stem
     # Compiled (Nuitka) modules have no code object, so runpy can't run them: import the module and call its main().
-    # Source and PyInstaller builds still use runpy, which runs the module just like "python script.py".
-    compiled = "__compiled__" in globals() or (ac_paths.FROZEN and not hasattr(sys, "_MEIPASS"))
+    # From source, runpy runs the module just like "python script.py".
+    compiled = "__compiled__" in globals()
     try:
         if compiled:
             import importlib
@@ -1538,8 +1487,7 @@ def selfcheck():
     lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
     check("ac_bench.lua" in lua and "manifest.ini" in lua, f"embedded Lua logger: {lua}")
     for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
-                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_classify_laps",
-                "ac_grid_builder", "tkinter"):
+                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "tkinter"):
         try:
             importlib.import_module(mod)
             ok = True

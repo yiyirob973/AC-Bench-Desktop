@@ -1,4 +1,4 @@
-"""Class assignment from benchmark results (implements grid_dynamics.txt).
+"""Class assignment from benchmark results.
 
 How it works
  1. Lap scoring: drop lap 1 (standing start) and score a car on a track by the median of its timed laps, not the single

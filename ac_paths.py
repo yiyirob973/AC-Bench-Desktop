@@ -1,8 +1,8 @@
-"""Where the app's files live, from source and in a packaged build (Nuitka standalone/onefile or PyInstaller).
+"""Where the app's files live, from source and in the packaged Nuitka build (standalone or onefile).
 
 RES   read-only files shipped inside the app: template_race.ini, bundled_car/, apps/lua/ac_bench/. In the exe they are
-      unpacked to a temporary folder (sys._MEIPASS) that is deleted when the app closes, so nothing that has to stay
-      may be written there.
+      unpacked to a temporary folder that is deleted when the app closes, so nothing that has to stay may be written
+      there.
 DATA  everything the app writes and keeps (settings, results, cloud_config.json, caches, logs). That's the folder the
       exe sits in, so copying the folder moves everything. If it isn't writable (Program Files, say) the app falls back
       to %LOCALAPPDATA%\\AC-Bench.
@@ -12,8 +12,8 @@ import os
 import sys
 from pathlib import Path
 
-# PyInstaller sets sys.frozen. Nuitka does not, but every compiled module has __compiled__
-FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+# every Nuitka-compiled module has __compiled__
+FROZEN = "__compiled__" in globals()
 APP_NAME = "AC-Bench"
 
 
@@ -56,7 +56,7 @@ def _data_dir():
     return fallback
 
 
-RES = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)
+RES = Path(__file__).resolve().parent
 DATA = _data_dir()
 
 
@@ -74,6 +74,15 @@ def utf8_output():
                 stream.reconfigure(encoding="utf-8", errors="replace")
         except (OSError, ValueError):
             pass
+
+
+def bundled_car_id():
+    """Folder name of the car shipped in bundled_car/ (the benchmark car), or None if there isn't exactly one."""
+    try:
+        dirs = [p for p in (RES / "bundled_car").iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    return dirs[0].name if len(dirs) == 1 else None
 
 
 def app_executable():

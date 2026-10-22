@@ -26,7 +26,6 @@ Speed: --batch N puts N test cars in one race (capped by the track's pit boxes).
 other, so --group-by sorts them so cars of similar pace share a batch. Use the estimate CSV from ac_car_classifier.py;
 on later tracks the times already measured on earlier tracks are used instead.
 
-Then: python ac_classify_laps.py lap_results.json CARS_DIR
 """
 import argparse, configparser, csv, json, os, re, shutil, statistics, subprocess, sys, time
 from pathlib import Path
@@ -336,6 +335,13 @@ def main():
     ap.add_argument("--stop-file", help="graceful stop: if this file appears, kill AC, keep results, exit")
     args = ap.parse_args()
 
+    # the included benchmark car is the AI's reference opponent, so it is never benchmarked itself
+    bundled = ac_paths.bundled_car_id()
+    if bundled and args.probe and bundled in args.probe:
+        args.probe = [x for x in args.probe if x != bundled]
+        print(f"skipping {bundled}: it's the included benchmark car and is never benchmarked")
+        if not args.probe:
+            sys.exit("Nothing to do.")
     if args.probe:
         args.batch = max(args.batch, len(args.probe))     # a probe is one launch per track
 
@@ -369,6 +375,8 @@ def main():
         cars = [c for c in cars if re.search(args.include, c.name)]
     if args.exclude:
         cars = [c for c in cars if not re.search(args.exclude, c.name)]
+    if bundled:
+        cars = [c for c in cars if c.name != bundled]
 
     specs = args.tracks
     res_path = Path(args.results)
