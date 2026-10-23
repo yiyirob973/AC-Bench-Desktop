@@ -1,20 +1,19 @@
-"""
-Where the app's files are: from source, and in a packaged build (Nuitka standalone/onefile or PyInstaller).
+"""Where the app's files live, from source and in the packaged Nuitka build (standalone or onefile).
 
-RES   read-only files shipped inside the app: template_race.ini, bundled_car/, apps/lua/ac_bench/.
-      In the exe these are unpacked to a temporary folder (sys._MEIPASS) that is DELETED when the app closes,
-      so nothing the app must keep may be written there.
-DATA  everything the app writes and keeps (settings, results, cloud_config.json, caches, logs): the folder the exe
-      sits in (portable: copy the folder and everything moves with it). If that folder is not writable
-      (for example Program Files) it falls back to %LOCALAPPDATA%\\AC-Bench.
-In source form both are simply the folder of the .py files.
+RES   read-only files shipped inside the app: template_race.ini, bundled_car/, apps/lua/ac_bench/. In the exe they are
+      unpacked to a temporary folder that is deleted when the app closes, so nothing that has to stay may be written
+      there.
+DATA  everything the app writes and keeps (settings, results, cloud_config.json, caches, logs). That's the folder the
+      exe sits in, so copying the folder moves everything. If it isn't writable (Program Files, say) the app falls back
+      to %LOCALAPPDATA%\\AC-Bench.
+From source, both are just the folder with the .py files.
 """
 import os
 import sys
 from pathlib import Path
 
-# PyInstaller sets sys.frozen; Nuitka does not, but defines __compiled__ in every compiled module
-FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+# every Nuitka-compiled module has __compiled__
+FROZEN = "__compiled__" in globals()
 APP_NAME = "AC-Bench"
 
 
@@ -30,7 +29,7 @@ def _writable(folder):
 
 
 def _exe_folder():
-    """The folder the user's exe sits in (for a Nuitka onefile build: the original exe, not the unpack folder)."""
+    """Folder the user's exe sits in (for a Nuitka onefile build that's the original exe, not the unpack folder)."""
     compiled = globals().get("__compiled__")
     containing = getattr(compiled, "containing_dir", None)
     if containing:
@@ -43,7 +42,7 @@ def _exe_folder():
 
 
 def _data_dir():
-    forced = os.environ.get("AC_BENCH_DATA")    # set by the app for the job processes it starts: same folder as the window
+    forced = os.environ.get("AC_BENCH_DATA")    # set by the app for the jobs it starts, so they use the same folder as the window
     if forced and Path(forced).is_dir():
         return Path(forced).resolve()
     if not FROZEN:
@@ -57,13 +56,14 @@ def _data_dir():
     return fallback
 
 
-RES = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)
+RES = Path(__file__).resolve().parent
 DATA = _data_dir()
 
 
 def utf8_output():
-    """Make this process write UTF-8 (never fail on a character): the app reads every job's output as UTF-8, but
-    Windows gives a piped child the console code page (cp1252), which cannot hold car names such as 'Golf Mk\u2076'."""
+    """Make this process write UTF-8 and never fail on a character. The app reads every job's output as UTF-8, but Windows
+    gives a piped child the console code page (cp1252), which can't hold car names like 'Golf Mk⁶'.
+    """
     for stream in (sys.stdout, sys.stderr):
         if stream is None or not hasattr(stream, "reconfigure"):
             continue
@@ -76,10 +76,20 @@ def utf8_output():
             pass
 
 
+def bundled_car_id():
+    """Folder name of the car shipped in bundled_car/ (the benchmark car), or None if there isn't exactly one."""
+    try:
+        dirs = [p for p in (RES / "bundled_car").iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    return dirs[0].name if len(dirs) == 1 else None
+
+
 def app_executable():
-    """The program to start again for a job (the app runs its jobs as copies of itself in a packaged build).
-    sys.executable is not reliable in a one-file build (it can name a file that does not exist), so ask Windows for the
-    image of the running process first, then fall back to sys.executable and the path the user started."""
+    """The program to start again for a job (a packaged build runs its jobs as copies of itself). sys.executable isn't
+    reliable in a one-file build and can name a file that doesn't exist, so ask Windows for the running process's image
+    first, then fall back to sys.executable and the path the user started.
+    """
     candidates = []
     if sys.platform == "win32":
         try:
@@ -97,7 +107,7 @@ def app_executable():
 
 
 def main():
-    """python ac_paths.py (or the exe with --ac-run ac_paths.py): show where this build looks for its files."""
+    """Show where this build looks for its files (python ac_paths.py, or the exe with --ac-run ac_paths.py)."""
     print("frozen=%s\nRES=%s\nDATA=%s\nEXE=%s" % (FROZEN, RES, DATA, app_executable()))
 
 

@@ -1,8 +1,6 @@
-"""
-Car identity for the cloud. A folder name is not an identity: two mods can share one, and a mod
-update can change the physics under the same name. So a rating belongs to the car's PHYSICS:
-the hash covers data.acd and/or data/ (every file) and collider.ini. Skins, models, sounds and the
-UI files do not change how a car drives, so they are not part of it.
+"""Car identity for the server. A folder name isn't an identity: two mods can share one, and a mod update can change the
+physics under the same name. So a rating belongs to the car's physics: the hash covers data.acd and/or data/ (every
+file) and collider.ini. Skins, models, sounds and the UI files don't change how a car drives, so they're left out.
 """
 import hashlib
 from pathlib import Path
@@ -17,7 +15,7 @@ def _sha256_file(p):
 
 
 def car_hash(car_dir):
-    """sha256 hex of the car's physics files as installed, or None if the car has none."""
+    """SHA-256 (hex) of the car's installed physics files, or None if the car has none."""
     base = Path(car_dir)
     parts = []
     acd = base / "data.acd"

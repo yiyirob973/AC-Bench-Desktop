@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
-"""
-Simple GUI for the AC car benchmark tools. Keep this file in the same folder as ac_lap_bench.py, ac_conditions.py,
-ac_baseline.py, ac_track_check.py, ac_cloud.py, ac_car_classifier.py and ac_tag_writer.py, plus the bundled
-template_race.ini (the race.ini the benchmark runs are built from) a bundled_car/<car id>/ folder (the car
-the benchmark drives) and apps/lua/ac_bench/ (the in-game lap logger). The car and the logger are installed into
-Assetto Corsa automatically before each benchmark; the user is never asked for any of these. Results (lap_results.json)
-are saved in that folder. Settings are remembered in ac_bench_gui.json.
+"""GUI for the AC benchmark tools. Keep this file in the same folder as ac_lap_bench.py, ac_conditions.py, ac_baseline.py,
+ac_track_check.py, ac_cloud.py, ac_car_classifier.py and ac_tag_writer.py, plus template_race.ini (the race.ini the
+benchmark races are built from), a bundled_car/<car id>/ folder (the car the benchmark drives) and apps/lua/ac_bench/
+(the in-game lap logger). The car and the logger are installed into Assetto Corsa automatically before each benchmark.
+Results (lap_results.json) are saved in that folder and settings in ac_bench_gui.json.
 
-Tabs
-The tabs follow the workflow, first step to last:
-  1. Setup           Assetto Corsa folders, install the required car and Lua logger, server address and registration
+Tabs, in the order you use them:
+  1. Setup           Assetto Corsa folders, install the car and Lua logger, server address and registration
   2. Vanilla check   compares the benchmark tracks and acs.exe with the environment the server publishes
-  3. Benchmark       the server's conditions (read-only), choose cars, run, then upload the results
-  4. Cars & ratings  "Local cars": your own ratings; "Server cars": live classes; apply the class tags
+  3. Benchmark       the server's conditions (read-only), pick cars, run, upload the results
+  4. Cars & ratings  "Local cars" are your own ratings, "Server cars" the live classes; apply the class tags
 
-The benchmark conditions (profile, tracks, laps, the vanilla environment) are never set here: they are fetched from
-the server before every benchmark, check and upload.
+The benchmark conditions (profile, tracks, laps, vanilla environment) are never set here. They are fetched from the
+server before every benchmark, check and upload.
 
-Server cars is LIVE: the installed cars are hashed (cached) and only those are looked up on the server
-(ac_live.py, POST /v1/cars/lookup) when the tab opens, at start and on Refresh. The ratings are held in memory
-only; "Apply server classes as tags" writes the class tags (always "#Pride-<class>") from that live data.
+Server cars is live: the installed cars are hashed (cached) and only those are looked up on the server (ac_live.py,
+POST /v1/cars/lookup) when the tab opens, at start and on Refresh. The ratings stay in memory. "Apply server classes as
+tags" writes the class tags (always "#Pride-<class>") from that data.
 
-Run: python ac_bench_gui.py   (tkinter ships with the python.org installer)
+Run it with: python ac_bench_gui.py   (tkinter comes with the python.org installer)
 """
-import csv, json, os, queue, re, shutil, subprocess, sys, threading
+import json, os, queue, re, shutil, subprocess, sys, threading
 from datetime import datetime
 from pathlib import Path
 
 import ac_paths  # noqa: E402  (the script's own folder is already first on sys.path when run as a script)
 
-HERE = ac_paths.DATA        # everything the app writes and keeps: settings, results, caches (beside the exe)
+HERE = ac_paths.DATA        # everything the app writes and keeps: settings, results, caches (next to the exe)
 RES = ac_paths.RES          # everything shipped inside the app: race template, benchmark car, Lua logger
 from ac_car_classifier import class_sort_key  # noqa: E402
 import ac_conditions as cond  # noqa: E402
@@ -37,54 +34,46 @@ import ac_cloud  # noqa: E402  (link codes for signing in on another device)
 import ac_live  # noqa: E402  (live per-car lookups for the Server cars list)
 import ac_track_check  # noqa: E402  (file hashing, used to compare the bundled car with the installed one)
 
-cond.ALLOW_STALE = True  # this process only: show the last known conditions while offline. Jobs never do this.
+cond.ALLOW_STALE = True  # this process only: show the last known conditions while offline. Jobs never do.
 
 CFG_FILE = HERE / "ac_bench_gui.json"
 STOP_FILE = HERE / "STOP"
 RESULTS = HERE / "lap_results.json"
-CLOUD_CLASSES = HERE / "car_classes_cloud.csv"
-CLOUD_MISSING = HERE / "cloud_missing.txt"
-# Server table cached by ac_cloud.py sync. CHECK this name against what ac_cloud.py leaves in this folder.
-CLOUD_TABLE = HERE / "cloud_classes.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 
-BUNDLED_CAR_DIR = RES / "bundled_car"    # holds ONE car folder (the car the benchmark drives); installed into AC
+BUNDLED_CAR_DIR = RES / "bundled_car"    # holds one car folder, the car the benchmark drives; it gets installed into AC
 BUNDLED_LUA_APP = RES / "apps" / "lua" / "ac_bench"   # the in-game lap logger, installed into AC's apps/lua
-TEMPLATE = RES / "template_race.ini"      # embedded in the app: the user never provides a race.ini
-TAG_PREFIX = "#Pride-"                    # class tags are always "#Pride-<class>", not configurable
-LEGACY_TAG_PREFIXES = ["#grid-class-"]    # tags from the earlier tool version: replaced, never left next to the new one
+TEMPLATE = RES / "template_race.ini"      # embedded in the app, nobody has to supply a race.ini
+TAG_PREFIX = "#Pride-"                    # class tags are always "#Pride-<class>", this isn't configurable
+LEGACY_TAG_PREFIXES = ["#grid-class-"]    # tags from the earlier tool version, replaced so they never sit next to the new one
 
 DEFAULTS = {
     "ac_dir": r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa",
     "docs_dir": str(Path.home() / "Documents" / "Assetto Corsa"),
     "group_by": "",
     "batch": 1, "include": "", "exclude": "",
-    "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "",
+    "retry_failed": False, "rerun_mode": "skip", "rerun_ids": "", "probe_ids": "", "probe_all_tracks": False,
     "start_delay": 25, "auto_upload": True,
-    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "cloud_attest": True,
+    "cloud_url": "", "cloud_name": "", "cloud_invite": "", "cloud_link": "", "cloud_prov": False, "lua_auto_tags": False, "cloud_attest": True,
 }
 
 LOCAL_FILTERS = ["All", "Done", "Not done", "Partial", "Failed", "Old settings"]
 SERVER_FILTERS = ["All", "Verified", "Provisional", "No server class", "Flagged"]
 
 
-# ---------- command builders (pure functions, no GUI) ----------
+# ---------- command builders (plain functions, no GUI) ----------
 
 def cars_dir(c):
     return str(Path(c["ac_dir"]) / "content" / "cars")
 
 
 def bundled_car_id():
-    """Folder name of the bundled benchmark car (bundled_car/<id>/), or None if there is none (or not exactly one)."""
-    try:
-        dirs = [p for p in BUNDLED_CAR_DIR.iterdir() if p.is_dir()]
-    except OSError:
-        return None
-    return dirs[0].name if len(dirs) == 1 else None
+    """Folder name of the bundled benchmark car (bundled_car/<id>/), or None if there is none or more than one."""
+    return ac_paths.bundled_car_id()
 
 
 def exclude_regex(user_regex=""):
-    """The user's 'skip' regex plus the bundled car, which is never a test car, never listed and never tagged."""
+    """The user's skip regex plus the bundled car, which is never a test car and is never listed or tagged."""
     parts = [f"(?:{user_regex})"] if str(user_regex).strip() else []
     car = bundled_car_id()
     if car:
@@ -93,14 +82,15 @@ def exclude_regex(user_regex=""):
 
 
 def install_bundled_car(ac_dir, say=print):
-    """Make sure the bundled benchmark car is installed in content/cars and identical to the bundled copy
-    (a different or damaged copy is replaced). -> True if the car is ready (or there is no bundled car)."""
+    """Make sure the bundled benchmark car is installed in content/cars and matches the bundled copy (a different or damaged
+    copy is replaced). Returns True if the car is ready, or if there is no bundled car.
+    """
     car = bundled_car_id()
     if car is None:
         if BUNDLED_CAR_DIR.is_dir() and any(p.is_dir() for p in BUNDLED_CAR_DIR.iterdir()):
-            say("bundled_car must contain exactly one car folder.\n")
+            say("The bundled_car folder must hold exactly one car.\n")
             return False
-        say("No bundled benchmark car found (bundled_car folder): nothing to install.\n")
+        say("No bundled benchmark car found, nothing to install.\n")
         return True
     src, dst = BUNDLED_CAR_DIR / car, Path(ac_dir) / "content" / "cars" / car
     want = ac_track_check.digest(ac_track_check.hash_tree(src))
@@ -114,12 +104,13 @@ def install_bundled_car(ac_dir, say=print):
 
 
 def install_bundled_lua_app(ac_dir, say=print):
-    """Install or update the bundled Lua lap logger in <AC>/apps/lua/<name>. Only the bundled files are compared
-    and copied (other files in that folder, such as anything the logger writes, are left alone).
-    -> True if the logger is installed and identical to the bundled copy."""
+    """Install or update the bundled Lua lap logger in <AC>/apps/lua/<name>. Only the bundled files are compared and copied;
+    other files in that folder, such as anything the logger writes, are left alone.
+    Returns True if the logger is installed and matches the bundled copy.
+    """
     src = BUNDLED_LUA_APP
     if not src.is_dir() or not any(src.iterdir()):
-        say(f"The bundled Lua logger is missing from this app ({src}).\n")
+        say(f"The Lua logger is missing from this app ({src}).\n")
         return False
     dst = Path(ac_dir) / "apps" / "lua" / src.name
     want = ac_track_check.hash_tree(src)
@@ -130,40 +121,60 @@ def install_bundled_lua_app(ac_dir, say=print):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src / f, target)
     if changed:
-        say(f"Installed the AC Bench Lua logger into {dst} ({len(changed)} file(s) updated).\n")
+        say(f"Installed the Lua logger in {dst} ({len(changed)} file(s) updated).\n")
     extras = sorted(f for f in have if f not in want and f.lower().endswith((".lua", ".ini")))
     if extras:
-        say("WARNING: extra Lua/ini files in the logger's folder may change its behaviour: " + ", ".join(extras) + "\n")
+        say("Warning: extra Lua/ini files in the logger folder may change how it works: " + ", ".join(extras) + "\n")
     after = ac_track_check.hash_tree(dst)
     return all(after.get(f) == want[f] for f in want)
 
 
+def write_lua_config(ac_dir, c):
+    """Tell the in-game Lua app which server to ask and how (config.json next to the logger). The app uses it to keep the
+    #Pride-<class> tags current. Only written when it changed. Returns True if the file is up to date.
+    """
+    dst = Path(ac_dir) / "apps" / "lua" / BUNDLED_LUA_APP.name
+    if not dst.is_dir():
+        return False
+    want = json.dumps({"server": str(c.get("cloud_url", "")).strip().rstrip("/"),
+                       "include_provisional": bool(c.get("cloud_prov")),
+                       "auto": bool(c.get("lua_auto_tags")), "prefix": TAG_PREFIX}, indent=2)
+    f = dst / "config.json"
+    try:
+        if f.is_file() and f.read_text(encoding="utf-8") == want:
+            return True
+        f.write_text(want, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def bundled_car_state(ac_dir):
-    """(code, text) for the bundled benchmark car in <AC>/content/cars: ok | missing | outdated | nobundle."""
+    """(code, text) for the bundled benchmark car in <AC>/content/cars. Code is ok, missing, outdated or nobundle."""
     car = bundled_car_id()
     if car is None:
-        return "nobundle", "No benchmark car embedded in this app (bundled_car): reinstall or restore the app files"
+        return "nobundle", "The benchmark car is missing from this app. Reinstall the app."
     dst = Path(ac_dir) / "content" / "cars" / car
     if not dst.is_dir():
         return "missing", f"Benchmark car {car} is not installed"
     want = ac_track_check.digest(ac_track_check.hash_tree(BUNDLED_CAR_DIR / car))
     if ac_track_check.digest(ac_track_check.hash_tree(dst)) == want:
         return "ok", f"Benchmark car {car} is installed and up to date"
-    return "outdated", f"Benchmark car {car} differs from the bundled copy (installing replaces it)"
+    return "outdated", f"Benchmark car {car} is different from the bundled copy (installing replaces it)"
 
 
 def bundled_lua_state(ac_dir):
-    """(code, text) for the bundled Lua lap logger in <AC>/apps/lua/<name>: ok | missing | outdated | nobundle."""
+    """(code, text) for the bundled Lua lap logger in <AC>/apps/lua/<name>. Code is ok, missing, outdated or nobundle."""
     src = BUNDLED_LUA_APP
     if not src.is_dir() or not any(src.iterdir()):
-        return "nobundle", "No Lua logger embedded in this app (apps/lua/ac_bench): reinstall or restore the app files"
+        return "nobundle", "The Lua logger is missing from this app. Reinstall the app."
     dst = Path(ac_dir) / "apps" / "lua" / src.name
     if not dst.is_dir():
-        return "missing", "Lap logger (Lua app) is not installed"
+        return "missing", "The lap logger is not installed"
     want, have = ac_track_check.hash_tree(src), ac_track_check.hash_tree(dst)
     if all(have.get(f) == want[f] for f in want):
-        return "ok", "Lap logger (Lua app) is installed and up to date"
-    return "outdated", "Lap logger (Lua app) is out of date (installing updates it)"
+        return "ok", "The lap logger is installed and up to date"
+    return "outdated", "The lap logger is out of date (installing updates it)"
 
 
 def bench_cmd(c, extra=()):
@@ -180,7 +191,7 @@ def bench_cmd(c, extra=()):
     if c["retry_failed"]:
         cmd.append("--retry-failed")
     cmd += ["--start-delay", str(c["start_delay"])]
-    if c["auto_upload"] and str(c["cloud_url"]).strip():      # send each pack's times as soon as its cars have finished
+    if c["auto_upload"] and str(c["cloud_url"]).strip():      # send each pack's times as soon as its cars finish
         cmd += ["--auto-upload", "--server", str(c["cloud_url"]).strip()]
     cmd += list(extra)
     # variable-length options go last
@@ -198,9 +209,9 @@ def cloud_cmd(c, action):
     if action == "ping":
         return cmd + ["ping"]
     if action == "register":
-        # --invite=VALUE keeps a code that starts with "-" from being mistaken for an option
+        # --invite=VALUE stops a code that starts with "-" being read as an option
         return cmd + ["register", "--invite=" + str(c["cloud_invite"]).strip(), "--name=" + str(c["cloud_name"]).strip()]
-    if action == "login":     # --code=VALUE: a code is never mistaken for an option
+    if action == "login":     # --code=VALUE, same reason
         return cmd + ["login", "--code=" + str(c["cloud_link"]).strip()]
     cmd += [action, "--cars-dir", cars_dir(c)]
     if action == "upload" and c.get("cloud_attest"):
@@ -217,29 +228,33 @@ def conditions_cmd(c):
 
 
 def verify_cmd(c):
-    """Vanilla check against the server's environment (tracks come from the server too)."""
+    """Vanilla check against the server's environment (the tracks come from the server too)."""
     return ["ac_track_check.py", "verify", "--ac-dir", c["ac_dir"]]
 
 
 def create_ref_cmd(c, out=""):
-    """Operator: build the canonical track reference from this install (the track list comes from the server)."""
+    """For the operator: build the canonical track reference from this install (the track list comes from the server)."""
     cmd = ["ac_track_check.py", "create", "--ac-dir", c["ac_dir"]]
     if out:
         cmd += ["--out", out]
     return cmd
 
 
-def probe_cmd(c, ids=None):
+def probe_cmd(c, ids=None, all_tracks=None):
+    """Rebenchmark the chosen cars. By default only the tracks where a car has no valid time yet are run. all_tracks=True (or
+    the probe_all_tracks setting) redoes every track.
+    """
     ids = list(ids) if ids is not None else c["probe_ids"].split()
-    return bench_cmd(c, ["--probe", *ids])
+    if all_tracks is None:
+        all_tracks = bool(c.get("probe_all_tracks"))
+    return bench_cmd(c, (["--all-tracks"] if all_tracks else []) + ["--probe", *ids])
 
 
 def tag_cmd(c, mode):
-    """mode: apply | untag | restore. 'apply' looks up only the locally installed cars on the server.
-    Tags are always TAG_PREFIX + class."""
+    """mode is apply, untag or restore. 'apply' looks up only the locally installed cars on the server. Tags are always TAG_PREFIX + class."""
     if mode == "restore":
         return ["ac_tag_writer.py", cars_dir(c), "--restore"]
-    if mode == "apply":   # finds the local cars and asks the server about only those (ac_live.py tag)
+    if mode == "apply":   # finds the local cars and asks the server about just those (ac_live.py tag)
         cmd = ["ac_live.py", "tag", "--server", str(c["cloud_url"]).strip(), "--cars-dir", cars_dir(c)]
         if c.get("cloud_prov"):
             cmd.append("--include-provisional")
@@ -256,7 +271,7 @@ def tag_cmd(c, mode):
     return cmd
 
 
-# ---------- car list data (pure functions, no GUI) ----------
+# ---------- car list data (plain functions, no GUI) ----------
 
 def load_car_names(ac_dir):
     """[(folder id, display name)] for every car in content/cars."""
@@ -277,13 +292,14 @@ def load_car_names(ac_dir):
 
 
 def build_rows(cars, results, tracks, profile=None):
-    """Rows for the LOCAL car list: only the lap times this PC measured. The class is NOT worked out here: the
-    server classifies (upload, then see the Server cars list). 'done' = a valid time on every track."""
+    """Rows for the local car list, which only shows the lap times measured on this PC. The class isn't worked out here, the
+    server does that (upload, then look at the Server cars list). 'done' means a valid time on every track.
+    """
     tracks = [t.strip() for t in tracks if t and t.strip()]
     try:
         import ac_rating as rating
         lap_score = rating.lap_score
-    except cond.ConditionsUnavailable:  # no usable conditions yet: list the cars without times
+    except cond.ConditionsUnavailable:  # no usable conditions yet, so list the cars without times
         lap_score = (lambda e: (None,))
     rows = []
     for cid, name in cars:
@@ -315,42 +331,12 @@ def _num(v):
         return None
 
 
-def read_cloud_csv(csv_path):
-    """{car id: csv row} from the downloaded server classes (empty if the file is not there)."""
-    by_id = {}
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                by_id[r.get("id", "")] = r
-    except OSError:
-        pass
-    return by_id
-
-
-def purge_downloaded():
-    """Delete the downloaded server ratings from disk and forget the download marker, so the next sync fetches
-    the table fresh (otherwise the server answers 'not modified' and there is nothing left to read)."""
-    for p in (CLOUD_CLASSES, CLOUD_TABLE):
-        try:
-            p.unlink()
-        except OSError:
-            pass
-    try:
-        j = json.loads(CLOUD_CFG.read_text(encoding="utf-8"))
-        gone = [k for k in j if "etag" in k.lower()]
-        for k in gone:
-            j.pop(k)
-        if gone:
-            CLOUD_CFG.write_text(json.dumps(j, indent=1), encoding="utf-8")
-    except (OSError, ValueError):
-        pass
-
-
 def load_cloud_rows(cars, source, tracks):
-    """Rows for the SERVER car list. source: {car id: csv row} (or a CSV path). Every car in the library gets
-    a row; cars the server has no usable class for are 'no server class'."""
+    """Rows for the server car list. source is {car id: row}. Every car in the library gets a row, and cars
+    the server has no usable class for show 'no server class'.
+    """
     tracks = [t.strip() for t in tracks if t and t.strip()]
-    by_id = source if isinstance(source, dict) else read_cloud_csv(source)
+    by_id = source
     rows = []
     for cid, name in cars:
         r = by_id.get(cid)
@@ -381,7 +367,7 @@ def status_tag(status):
 
 
 def row_matches(kind, r, text, sf):
-    """Filter box + status dropdown for a row of either list."""
+    """Filter box and status dropdown for a row of either list."""
     if text and text not in r["id"].lower() and text not in r["name"].lower():
         return False
     s = r["status"]
@@ -445,7 +431,7 @@ def main():
             pass
     vars_ = {}
     if "start_delay" not in saved and "click_delay" in saved:
-        saved["start_delay"] = saved["click_delay"]     # the old name of the delay before the first start attempt
+        saved["start_delay"] = saved["click_delay"]     # old name of the delay before the first start attempt
     for k, d in DEFAULTS.items():
         v = saved.get(k, d)
         if isinstance(d, bool):
@@ -463,14 +449,21 @@ def main():
             try:
                 out[k] = v.get()
             except tk.TclError:
-                out[k] = DEFAULTS[k]  # blank/invalid number field
-        d = cond.load_any()  # the tracks come from the server, never from this app
+                out[k] = DEFAULTS[k]  # blank or invalid number field
+        d = cond.load_any()  # the tracks come from the server, not from this app
         tr = (d["tracks"] if d else []) + ["", ""]
         out["track1"], out["track2"] = tr[0], tr[1]
         return out
 
     def save_cfg():
         CFG_FILE.write_text(json.dumps(cfg(), indent=1), encoding="utf-8")
+
+    def save_lua_settings():
+        """Save the settings and pass the in-game app's options on right away (only if its folder is installed)."""
+        save_cfg()
+        c = cfg()
+        if c["ac_dir"]:
+            write_lua_config(c["ac_dir"], c)
 
     # --- log (hidden by default) + process runner ---
     log_frame = ttk.Frame(root)
@@ -487,7 +480,7 @@ def main():
     last_line = tk.StringVar(value="")
     q = queue.Queue()
     state = {"proc": None, "graceful": False, "on_done": None, "stopping": False,
-             "cars": [], "cars_dir": None, "server_by_id": {}, "server_stamp": "", "purge_pending": False,
+             "cars": [], "cars_dir": None, "server_by_id": {}, "server_stamp": "",
              "live_busy": False, "live_ok": False, "live_error": "", "live_at": 0.0, "live_msg": "", "live_found": 0}
     hooks = []  # called after every finished job (e.g. refresh the car lists)
     run_buttons = []
@@ -534,7 +527,7 @@ def main():
                     state["proc"] = None
                     set_busy(False)
                     if item[1] != 0 and not state["stopping"] and not state.get("quiet"):
-                        toggle_log(True)  # something went wrong: show the details
+                        toggle_log(True)  # something went wrong, show the details
                     for h in hooks:
                         h()
                     cb, state["on_done"] = state["on_done"], None
@@ -578,7 +571,7 @@ def main():
         state["stopping"] = True
         if state["graceful"] and not STOP_FILE.exists():
             STOP_FILE.touch()
-            write("Stop requested: finishing up (kills AC, keeps saved results)...\n")
+            write("Stopping: AC will be closed and saved results are kept.\n")
             status.set("Stopping...")
         else:
             p.terminate()
@@ -594,24 +587,25 @@ def main():
         return c
 
     def install_required(c):
-        """Install/update the bundled benchmark car and the Lua lap logger into the AC folder. -> True if both are ready."""
+        """Install or update the bundled benchmark car and the Lua lap logger in the AC folder. Returns True if both are ready."""
         try:
             car_ok = install_bundled_car(c["ac_dir"], say=write)
         except OSError as e:
-            messagebox.showerror("Benchmark car", f"Could not install the bundled benchmark car: {e}")
+            messagebox.showerror("Benchmark car", f"Could not install the benchmark car: {e}")
             return None
         if not car_ok:
-            messagebox.showwarning("Benchmark car", "The bundled benchmark car could not be installed correctly "
-                                                    "(see the log). Reinstall or restore the app files.")
+            messagebox.showwarning("Benchmark car", "The benchmark car did not install correctly "
+                                                    "(see the log). Reinstall the app.")
             return None
         try:
             lua_ok = install_bundled_lua_app(c["ac_dir"], say=write)
         except OSError as e:
-            messagebox.showerror("Lua logger", f"Could not install the bundled Lua logger: {e}")
+            messagebox.showerror("Lua logger", f"Could not install the Lua logger: {e}")
             return None
+        write_lua_config(c["ac_dir"], c)
         if not lua_ok:
-            messagebox.showwarning("Lua logger", "The bundled Lua logger could not be installed correctly "
-                                                 "(see the log). Reinstall or restore the app files.")
+            messagebox.showwarning("Lua logger", "The Lua logger did not install correctly "
+                                                 "(see the log). Reinstall the app.")
             return None
         return True
 
@@ -623,8 +617,8 @@ def main():
             messagebox.showwarning("AC folder", "acs.exe not found in the Assetto Corsa folder.")
             return None
         if not TEMPLATE.exists():
-            messagebox.showwarning("Template", f"{TEMPLATE.name} is missing from this app (it should be embedded). "
-                                               "Reinstall or restore the app files.")
+            messagebox.showwarning("Template", f"{TEMPLATE.name} is missing from this app. "
+                                               "Reinstall the app.")
             return None
         if not install_required(c):
             return None
@@ -632,17 +626,18 @@ def main():
 
     def need_csv(path):
         if not Path(path).exists():
-            messagebox.showwarning("Missing file", f"{path.name} not found yet. Run the earlier step first.")
+            messagebox.showwarning("Missing file", f"{path.name} not found. Run the earlier step first.")
             return False
         return True
 
     def run_with_conditions(build, graceful=False):
-        """Fetch the benchmark conditions from the server first, then run build() -> command.
-        Nothing runs if the server cannot be reached: the conditions are never taken from this PC."""
+        """Fetch the benchmark conditions from the server first, then run build() to get the command. Nothing runs if the server
+        can't be reached: the conditions never come from this PC.
+        """
         c = cfg()
         if not c["cloud_url"].strip():
-            messagebox.showwarning("Server", "The benchmark conditions come from the server. "
-                                             "Fill in the server address on the Setup tab first.")
+            messagebox.showwarning("Server", "The conditions come from the server. "
+                                             "Enter the server address on the Setup tab first.")
             return
         run(conditions_cmd(c), on_done=lambda: run(build(), graceful=graceful))
 
@@ -680,8 +675,9 @@ def main():
     scroll_areas = []
 
     def scroll_tab(parent, padding=12):
-        """A tab page that scrolls vertically when its content is taller than the window. -> (outer, inner):
-        add `outer` to the notebook and build the page inside `inner`."""
+        """A tab page that scrolls vertically when its content is taller than the window. Returns (outer, inner): add `outer` to
+        the notebook and build the page inside `inner`.
+        """
         outer = ttk.Frame(parent)
         canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
         vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
@@ -741,22 +737,22 @@ def main():
         if not c:
             return
         if not messagebox.askyesno("Create track reference",
-                                   "This turns THIS Assetto Corsa install into the canonical reference for the server: "
-                                   "every benchmark track folder and acs.exe are fingerprinted.\n\n"
-                                   "Only do this on a clean install (Steam > Verify integrity of game files, no extra "
-                                   "files in the track folders, no CSP track configs).\n\nContinue?"):
+                                   "This makes this Assetto Corsa install the reference for the server. "
+                                   "The benchmark track folders and acs.exe are fingerprinted.\n\n"
+                                   "Only do this on a clean install: verify the game files in Steam and make sure the "
+                                   "track folders have no extra files or CSP track configs.\n\nContinue?"):
             return
         out = filedialog.asksaveasfilename(title="Save the track reference", defaultextension=".json",
                                            initialfile="track_reference.json", filetypes=[("JSON", "*.json")])
         if out:
-            run(create_ref_cmd(c, out))   # reads only the track list from the server; needs no environment
+            run(create_ref_cmd(c, out))   # only reads the track list from the server, no environment needed
 
     def do_steam():
         try:
             os.startfile("steam://validate/244210")
         except Exception as e:
-            messagebox.showinfo("Steam", f"Could not open Steam ({e}).\nIn Steam: Assetto Corsa > Properties > "
-                                         "Installed Files > Verify integrity of game files.")
+            messagebox.showinfo("Steam", f"Could not open Steam ({e}).\nIn Steam, open Assetto Corsa > Properties > "
+                                         "Installed Files and verify the game files.")
 
     vf = ttk.Frame(tv)
     vf.pack(fill="x")
@@ -764,11 +760,10 @@ def main():
     ttk.Button(vf, text="Ask Steam to verify game files", command=do_steam).pack(side="left", padx=(0, 6))
     ttk.Button(vf, text="Create track reference (server operator)", command=do_create_ref).pack(side="left")
     ttk.Label(tv, justify="left", style="Muted.TLabel", text=(
-        "Compares every file of the benchmark tracks (including the AI racing lines) and acs.exe (the AI driving\n"
-        "code) with the environment the server publishes. Benchmarks run this check first and stop on any\n"
-        "difference. The server only keeps fingerprints, so a mismatch cannot list the files: use Steam's\n"
-        "'Verify integrity of game files' and remove any extra files you added to the track folders.\n"
-        "The tracks, laps and race settings are set by the server and cannot be changed here.\n"
+        "Compares the benchmark tracks (all files, including the AI lines) and acs.exe with the server's environment.\n"
+        "Benchmarks run this check first and stop if anything is different. The server only keeps fingerprints, so it\n"
+        "can't say which file differs: verify the game files in Steam and remove any extra files from the track folders.\n"
+        "The tracks, laps and race settings come from the server and can't be changed here.\n"
         "Server operators: 'Create track reference' fingerprints this (clean) install into a file; load it on the\n"
         "server with: python server.py set-env --from <file>.")
               ).pack(anchor="w", pady=10)
@@ -777,14 +772,14 @@ def main():
         cmd = state.get("last_cmd") or []
         if len(cmd) > 1 and cmd[0] == "ac_track_check.py" and cmd[1] == "create":
             rc = state.get("last_rc")
-            vstat.set({0: "Track reference created (see log for the file and the set-env command)",
-                       2: "Reference NOT created: install incomplete (see log)",
-                       3: "Cannot create: no track list from the server"}.get(rc, f"Create failed (exit {rc})"))
+            vstat.set({0: "Track reference created (see the log for the file)",
+                       2: "Reference not created: the install is incomplete (see the log)",
+                       3: "Can't create it: no track list from the server"}.get(rc, f"Create failed (exit {rc})"))
         elif len(cmd) > 1 and cmd[0] == "ac_track_check.py":
             rc = state.get("last_rc")
-            vstat.set({0: "Tracks are vanilla: identical to the server's environment",
-                       2: "NOT VANILLA: differs from the server's environment (see log)",
-                       3: "Cannot check: no usable benchmark conditions from the server"}.get(rc, f"Check failed (exit {rc})"))
+            vstat.set({0: "Tracks match the server's environment",
+                       2: "Tracks do not match the server's environment (see the log)",
+                       3: "Can't check: no conditions from the server"}.get(rc, f"Check failed (exit {rc})"))
 
     hooks.append(vstatus_hook)
 
@@ -804,9 +799,8 @@ def main():
     for i, v in enumerate((ac_stat, car_stat, lua_stat)):
         ttk.Label(rq, textvariable=v).grid(row=i, column=0, columnspan=3, sticky="w", padx=4)
     ttk.Label(rq, justify="left", style="Muted.TLabel", text=(
-        "Both ship with this app and go into your Assetto Corsa folder: the benchmark car into content/cars and the\n"
-        "Lua logger into apps/lua/ac_bench. A different or damaged copy is replaced. This also happens automatically\n"
-        "before every benchmark.")).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        "Both come with this app. The car goes into content/cars and the logger into apps/lua/ac_bench.\n"
+        "A different or damaged copy is replaced. This also happens before every benchmark.")).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def do_install_required():
         c = need("ac_dir")
@@ -816,8 +810,8 @@ def main():
             messagebox.showwarning("AC folder", "acs.exe not found in the Assetto Corsa folder.")
             return
         if install_required(c):
-            write("Required files are installed and up to date.\n")
-            messagebox.showinfo("Required files", "The benchmark car and the lap logger are installed and up to date.")
+            write("Required files are up to date.\n")
+            messagebox.showinfo("Required files", "The benchmark car and the lap logger are up to date.")
         refresh_setup()
         cars_refresh(rescan=True)
 
@@ -840,42 +834,43 @@ def main():
         cloud_stat.set(("Registered as " + str(j.get("name", "?"))) if j.get("api_key") else "Not registered yet")
 
     ttk.Label(sg, textvariable=cloud_stat, style="Bold.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
-    ttk.Checkbutton(sg, text="Also use classes backed by a single submission (less reliable)",
-                    variable=vars_["cloud_prov"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 0))
+    ttk.Checkbutton(sg, text="Also use classes based on a single submission (less reliable)",
+                    variable=vars_["cloud_prov"], command=save_lua_settings).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 0))
+    ttk.Checkbutton(sg, text="Let the in-game app update car class tags by itself (off by default)",
+                    variable=vars_["lua_auto_tags"], command=save_lua_settings).grid(row=5, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
     def do_cloud(action):
         c = cfg()
         if not c["cloud_url"].strip():
-            messagebox.showwarning("Server", "Fill in the server address first (Setup tab).")
+            messagebox.showwarning("Server", "Enter the server address on the Setup tab first.")
             return
         if action == "register" and not (c["cloud_name"].strip() and c["cloud_invite"].strip()):
-            messagebox.showwarning("Server", "Registering needs your name and an invite code.")
+            messagebox.showwarning("Server", "Enter your name and an invite code to register.")
             return
         if action == "login" and not c["cloud_link"].strip():
-            messagebox.showwarning("Server", "Enter the link code created on your other device first.")
+            messagebox.showwarning("Server", "Enter the link code from your other device first.")
             return
         if action == "upload" and not need("ac_dir"):
             return
         if action == "upload" and c["cloud_attest"]:
-            # older results are attested with the CURRENT environment, so verify the tracks right now first
+            # older results get vouched for with the current environment, so check the tracks right now first
             run(conditions_cmd(c), on_done=lambda: run(verify_cmd(cfg()), on_done=lambda: run(cloud_cmd(c, "upload"))))
             return
         run(cloud_cmd(c, action))
 
     def do_download_and_tag():
-        """Tag the cars installed here: the app identifies them, asks the server about only those, and writes the tags."""
+        """Tag the cars installed here: identify them, ask the server about only those and write the tags."""
         c = cfg()
         if not c["cloud_url"].strip():
-            messagebox.showwarning("Server", "Fill in the server address first (Setup tab).")
+            messagebox.showwarning("Server", "Enter the server address on the Setup tab first.")
             return
         if not need("ac_dir"):
             return
         if not messagebox.askyesno(
                 "Apply server classes as tags",
-                f"The app will identify the cars installed here, ask the server about only those cars, and write a "
-                f"{TAG_PREFIX}<class> tag into each one it has a "
-                f"{'verified or provisional' if c['cloud_prov'] else 'verified'} class for (backups are made first). "
-                "Nothing is downloaded or saved beyond that.\n\nContinue?"):
+                f"This asks the server about the cars installed here and writes a {TAG_PREFIX}<class> tag to each car "
+                f"that has a {'verified or provisional' if c['cloud_prov'] else 'verified'} class. "
+                "Backups are made first.\n\nContinue?"):
             return
         run(tag_cmd(c, "apply"))
 
@@ -885,9 +880,9 @@ def main():
     pbtn(sb, "Register", lambda: do_cloud("register"))
     pbtn(sb, "Create link code for another device", lambda: do_link_code())
     ttk.Label(sg, justify="left", style="Muted.TLabel", text=(
-        "Register once with the invite code you were given. Already registered on another PC? Press 'Create link code'\n"
-        "there, then enter the code under 'Use the same account on another device' just below and press Sign in.\n"
-        "Uploading results is step 3, on the Benchmark tab; the class tags are applied on the Cars & ratings tab.")
+        "Register once with your invite code. Already registered on another PC? Press 'Create link code' there, then\n"
+        "enter the code under 'Use the same account on another device' below and press Sign in.\n"
+        "Results are uploaded on the Benchmark tab and class tags are applied on the Cars & ratings tab.")
               ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # ---- the same account on another device
@@ -899,7 +894,7 @@ def main():
         win.title("Link code")
         win.transient(root)
         win.resizable(False, False)
-        ttk.Label(win, justify="left", text=("On your other device open the Setup tab, enter this code under\n"
+        ttk.Label(win, justify="left", text=("On your other device, open the Setup tab, enter this code under\n"
                                               "'Use the same account on another device' and press Sign in:")
                   ).pack(padx=16, pady=(16, 8))
         ent = ttk.Entry(win, justify="center", font=("Consolas", 18), width=16)
@@ -917,11 +912,11 @@ def main():
         ttk.Button(bb, text="Close", command=win.destroy).pack(side="left", padx=4)
 
     def do_link_code():
-        """Signed in here: get a single-use code that signs another device in as the same account."""
+        """Get a single-use code that signs another device in as the same account (needs a signed-in device)."""
         import argparse
         c = cfg()
         if not c["cloud_url"].strip():
-            messagebox.showwarning("Server", "Fill in the server address first.")
+            messagebox.showwarning("Server", "Enter the server address first.")
             return
 
         def work():
@@ -944,36 +939,35 @@ def main():
     dvb.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
     pbtn(dvb, "Sign in with link code", lambda: do_cloud("login"), accent=True)
     ttk.Label(dv, justify="left", style="Muted.TLabel", text=(
-        "To get a code, press 'Create link code for another device' next to Register on a device that is already signed in.\n"
-        "Each device gets its own key for the same account; the code works once and expires after 10 minutes.")
+        "To get a code, press 'Create link code for another device' on a device that is already signed in.\n"
+        "The code works once and expires after a few minutes. Each device gets its own key.")
               ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     drv = group(ts, "Starting each race")
     af = ttk.Frame(drv)
     af.grid(row=0, column=0, columnspan=3, sticky="w", pady=(2, 0))
-    ttk.Label(af, text="first try after launching AC (s)").grid(row=0, column=0, padx=(4, 4))
+    ttk.Label(af, text="Seconds to wait before the first try").grid(row=0, column=0, padx=(4, 4))
     ttk.Spinbox(af, from_=5, to=300, width=5, textvariable=vars_["start_delay"]).grid(row=0, column=1)
     btn(af, "Set up start hotkey", lambda: run(["ac_controls.py", "setup", "--docs-dir", cfg()["docs_dir"],
                                                  "--ac-dir", cfg()["ac_dir"]]), 1, 0)
-    btn(af, "Test start hotkey (AC open on the pre-race screen)",
+    btn(af, "Test start hotkey (open AC on the pre-race screen first)",
         lambda: run(["ac_input.py", "hotkey", "--docs-dir", cfg()["docs_dir"]]), 1, 1, 2)
     ttk.Label(drv, justify="left", style="Muted.TLabel", text=(
-        "Every race is started by pressing AC's 'Start race' hotkey (Ctrl + a key, the same command as in Content Manager > Settings >\n"
-        "Assetto Corsa > Controls > System). A key you already set there is used; F12 is set only if nothing is set. Custom Shaders\n"
-        "Patch handles it inside the game when it lists __CM_START_SESSION, so Content Manager need not run. 'Set up start hotkey'\n"
-        "shows what controls.ini contains. Restart AC after the key changes.")
+        "Races are started with AC's 'Start race' hotkey (Ctrl + a key, the same one as in Content Manager > Settings >\n"
+        "Assetto Corsa > Controls > System). A key you already set is used. F12 is only set if nothing is set.\n"
+        "'Set up start hotkey' shows what controls.ini contains. Restart AC after the key changes.")
               ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     tgs = group(ts, "Optional: car tag clean-up")
     ttk.Label(tgs, justify="left", style="Muted.TLabel", text=(
-        f"Class tags are always written as {TAG_PREFIX}<class> (for example {TAG_PREFIX}A): one per car, never duplicated.\n"
-        "Backups of the changed car files are kept next to them.")).grid(row=0, column=0, columnspan=3, sticky="w")
+        f"Class tags look like {TAG_PREFIX}<class> (for example {TAG_PREFIX}1A), one per car.\n"
+        "Changed car files are backed up next to the originals.")).grid(row=0, column=0, columnspan=3, sticky="w")
 
     def do_tags(mode):
         c = need("ac_dir")
         if not c or not messagebox.askyesno("Confirm", {
                 "untag": f"Remove all {TAG_PREFIX}* tags from your car files?",
-                "restore": "Restore every car file from its backup (discards other edits made to those files)?"}[mode]):
+                "restore": "Restore every car file from its backup? Other edits made to those files will be lost."}[mode]):
             return
         run(tag_cmd(c, mode))
 
@@ -988,18 +982,19 @@ def main():
     sub = ttk.Notebook(tc)
     sub.grid(row=0, column=0, sticky="nsew")
 
-    def do_bench_selected(s):
+    def do_bench_selected(s, all_tracks=False):
         ids = list(s["tree"].selection())
         if not ids:
-            messagebox.showinfo("Select cars", "Select one or more cars in the list first.")
+            messagebox.showinfo("Select cars", "Select some cars in the list first.")
             return
         c = need_bench()
         if not c:
             return
-        if len(ids) > 20 and not messagebox.askyesno(
-                "Many cars", f"{len(ids)} cars selected. They run on every track, even if already rated. Continue?"):
-            return
-        run_with_conditions(lambda: probe_cmd(cfg(), ids), graceful=True)
+        if len(ids) > 20:
+            what = "on every track, even if already rated" if all_tracks else "only on the tracks where they have no time yet"
+            if not messagebox.askyesno("Many cars", f"{len(ids)} cars selected. They run {what}. Continue?"):
+                return
+        run_with_conditions(lambda: probe_cmd(cfg(), ids, all_tracks), graceful=True)
 
     def make_section(kind):
         local = kind == "local"
@@ -1114,6 +1109,7 @@ def main():
         bar_ = ttk.Frame(fr)
         bar_.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         pbtn(bar_, "Benchmark selected cars", lambda: do_bench_selected(s), accent=True)
+        pbtn(bar_, "Redo all tracks for selected", lambda: do_bench_selected(s, True))
         if not local:
             pbtn(bar_, "Apply server classes as tags", lambda: do_download_and_tag())
             pbtn(bar_, "Benchmark cars missing from server", lambda: do_missing())
@@ -1153,27 +1149,24 @@ def main():
         local_sec["rows"] = build_rows(state["cars"], results, tracks, profile=d["profile"] if d else None)
         server_sec["rows"] = load_cloud_rows(state["cars"], state["server_by_id"], tracks)
         local_sec["info"].set(
-            "Lap times measured on this PC (lap_results.json). The app only measures; after you upload, the server "
-            "decides each car's class (see Server cars). Selected cars run on every track, even if already done."
-            if d else "Benchmark conditions not downloaded yet, so no times can be shown: "
-                      "press Refresh on the Benchmark tab.")
+            "Lap times measured on this PC. The server decides each car's class after you upload (see Server cars)."
+            if d else "No conditions from the server yet, so no times can be shown. Press Refresh on the Benchmark tab.")
         if state["live_busy"]:
-            server_sec["info"].set("Asking the server ... " + state["live_msg"])
+            server_sec["info"].set("Asking the server... " + state["live_msg"])
         elif state["live_ok"]:
-            server_sec["info"].set(f"Live from the server at {state['server_stamp']}: {state['live_found']} of your "
-                                   f"{len(state['cars'])} cars are known to it. Only your installed cars are requested "
-                                   "and nothing is saved to disk.")
+            server_sec["info"].set(f"Updated {state['server_stamp']}: the server knows {state['live_found']} of your "
+                                   f"{len(state['cars'])} cars.")
         elif state["live_error"]:
-            server_sec["info"].set("Live data unavailable: " + state["live_error"] + "  (press Refresh to retry)")
+            server_sec["info"].set("Server data unavailable: " + state["live_error"] + " (press Refresh to try again)")
         else:
-            server_sec["info"].set("Server data not loaded yet. Press Refresh.")
+            server_sec["info"].set("No server data yet. Press Refresh.")
         local_sec["render"]()
         server_sec["render"]()
 
     hooks.append(cars_refresh)
 
     def live_refresh(force=False, max_age=60):
-        """Fetch live data for the installed cars from the server on a worker thread (never blocks the window)."""
+        """Fetch live data for the installed cars from the server on a worker thread, so the window never blocks."""
         import time as _t
         c = cfg()
         if state["live_busy"] or not c["cloud_url"].strip() or not c["ac_dir"].strip():
@@ -1214,7 +1207,7 @@ def main():
     # ======== Tab: Benchmark ========
     t1_page, t1 = scroll_tab(nb)
 
-    cnd = ttk.LabelFrame(t1, text="Benchmark conditions (set by the server, read-only)", padding=10)
+    cnd = ttk.LabelFrame(t1, text="Conditions (set by the server)", padding=10)
     cnd.pack(fill="x", pady=(0, 10))
     cond_text = tk.StringVar()
     pbtn(cnd, "Refresh", lambda: refresh_conditions(), side="right")
@@ -1230,9 +1223,11 @@ def main():
     ttk.Radiobutton(rr, text="Rerun all selected", variable=vars_["rerun_mode"], value="all").grid(row=0, column=2, sticky="w", padx=12)
     ttk.Radiobutton(rr, text="Rerun only these ids:", variable=vars_["rerun_mode"], value="ids").grid(row=0, column=3, sticky="w")
     ttk.Entry(rr, textvariable=vars_["rerun_ids"], width=30).grid(row=0, column=4, padx=6)
-    ttk.Checkbutton(rr, text="Also retry cars that failed before", variable=vars_["retry_failed"]).grid(
+    ttk.Checkbutton(rr, text="Also retry cars that failed", variable=vars_["retry_failed"]).grid(
         row=1, column=1, columnspan=4, sticky="w", pady=(4, 0))
     entry_row(sel, 3, "Probe car ids (space separated)", "probe_ids")
+    ttk.Checkbutton(sel, text="Probe: also redo tracks that already have a time",
+                    variable=vars_["probe_all_tracks"]).grid(row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
     opts = group(t1, "Run options")
     nums = ttk.Frame(opts)
@@ -1240,8 +1235,8 @@ def main():
     ttk.Label(nums, text="Cars per pack").pack(side="left")
     ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=vars_["batch"]).pack(side="left", padx=6)
     ttk.Label(nums, style="Muted.TLabel", wraplength=640, justify="left",
-              text="A pack runs on BOTH tracks before the next pack. 1 = cleanest baseline (one car on track); "
-                   "more is faster but cars share the track (the server limits how many).").pack(side="left", padx=8)
+              text="A pack runs on every track before the next pack starts. 1 car per pack is the cleanest; "
+                   "more is faster but the cars share the track. The server sets the limit.").pack(side="left", padx=8)
 
     def do_probe():
         c = need_bench()
@@ -1260,43 +1255,41 @@ def main():
     pbtn(bf, "Probe cars", do_probe)
 
     upg = group(t1, "Uploading your results")
-    ttk.Checkbutton(upg, text="Upload each pack's times automatically as soon as its cars have finished (needs registration)",
+    ttk.Checkbutton(upg, text="Upload each pack's times automatically (needs registration)",
                     variable=vars_["auto_upload"]).grid(row=0, column=0, columnspan=3, sticky="w", padx=4)
     upr = ttk.Frame(upg)
     upr.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
     pbtn(upr, "Upload my results (backup)", lambda: do_cloud("upload"))
-    ttk.Checkbutton(upg, text="Include results benchmarked before the server update (re-checks the vanilla tracks first)",
+    ttk.Checkbutton(upg, text="Also upload older results (checks the tracks first)",
                     variable=vars_["cloud_attest"]).grid(row=2, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
     ttk.Label(upg, justify="left", style="Muted.TLabel", text=(
-        "A pack is the cars that ran together (one car when 'Cars per pack' is 1). The server recomputes every score and rejects what\n"
-        "does not validate, and its classes for those cars appear in the log. If an automatic upload fails, the times stay saved: the\n"
-        "button sends everything that has not been uploaded yet.")
+        "A pack is the cars that ran together. The server recomputes the scores and the classes show up in the log.\n"
+        "If an upload fails, the times stay saved. The button sends everything not uploaded yet.")
               ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def refresh_conditions(quiet=False):
         c = cfg()
         if not c["cloud_url"].strip():
             if not quiet:
-                messagebox.showwarning("Server", "Fill in the server address on the Setup tab first.")
+                messagebox.showwarning("Server", "Enter the server address on the Setup tab first.")
             return
         run(conditions_cmd(c), quiet=quiet)
 
     def update_conditions_panel():
         d = cond.load_any()
         if not d:
-            cond_text.set("Not downloaded yet. They are fetched from the server automatically before every "
-                          "benchmark, check and upload (press Refresh to fetch now).")
+            cond_text.set("Not downloaded yet. They are fetched before every benchmark, check and upload (press Refresh to fetch now).")
             return
         try:
             import ac_baseline
             ac_baseline.reload()
             detail = ac_baseline.describe()
         except cond.ConditionsUnavailable as e:
-            detail = "PROBLEM: " + str(e)
+            detail = "Problem: " + str(e)
         t = cond.fetched_at()
         when = datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else "?"
         cond_text.set(f"{detail}\nServer version {d['version']}, fetched {when}. Up to {d['max_batch']} cars per pack. "
-                      f"Submissions {'open' if d['accepting_submissions'] else 'CLOSED'}.")
+                      f"Submissions are {'open' if d['accepting_submissions'] else 'closed'}.")
 
     def conditions_hook():
         cmd = state.get("last_cmd") or []
@@ -1304,22 +1297,10 @@ def main():
             update_conditions_panel()
 
     def upload_hook():
-        """After an upload the server has new classes for those cars: read them live."""
+        """After an upload the server has new classes for those cars, so read them live."""
         cmd = state.get("last_cmd") or []
         if cmd and cmd[0] == "ac_cloud.py" and "upload" in cmd and state.get("last_rc") == 0:
             live_refresh(force=True)
-
-    def purge_hook():
-        """After the tag step (or a failed download) remove the downloaded ratings from disk."""
-        if not state["purge_pending"]:
-            return
-        cmd = state.get("last_cmd") or []
-        name = cmd[0] if cmd else ""
-        if name == "ac_tag_writer.py" or (name == "ac_cloud.py" and state.get("last_rc") != 0):
-            state["purge_pending"] = False
-            purge_downloaded()
-            write("Downloaded ratings removed from disk (kept in memory for the Server cars list).\n")
-            cars_refresh()
 
     def do_missing():
         """Benchmark the installed cars the server has no class for yet (from the live server data)."""
@@ -1327,29 +1308,29 @@ def main():
         if not c:
             return
         if not state["live_ok"]:
-            messagebox.showinfo("Server", "No live server data yet. Press Refresh on the Server cars list first"
+            messagebox.showinfo("Server", "No server data yet. Press Refresh on the Server cars list first"
                                           f"{(': ' + state['live_error']) if state['live_error'] else '.'}")
             return
         skip = bundled_car_id()
         ids = [x[0] for x in state["cars"]
                if x[0] != skip and not (state["server_by_id"].get(x[0]) or {}).get("class")]
         if not ids:
-            messagebox.showinfo("Server", "Nothing to benchmark: the server has a class for every car you have installed.")
+            messagebox.showinfo("Server", "Nothing to benchmark: the server has a class for all your installed cars.")
             return
-        if len(ids) > 20 and not messagebox.askyesno("Server", f"{len(ids)} cars have no server class yet. Benchmark them all?"):
+        if len(ids) > 20 and not messagebox.askyesno("Server", f"{len(ids)} cars have no server class. Benchmark them all?"):
             return
         todo = HERE / "cloud_missing_run.txt"
         todo.write_text("\n".join(ids) + "\n", encoding="utf-8")
         run_with_conditions(lambda: bench_cmd(cfg(), ["--ids-file", str(todo)]), graceful=True)
 
     def refresh_setup():
-        """The Setup checklist: AC folder, required files, server registration, and what to do next."""
+        """The Setup checklist: AC folder, required files, server registration and what to do next."""
         c = cfg()
         ac = c["ac_dir"].strip()
         have_ac = bool(ac) and (Path(ac) / "acs.exe").exists()
         ac_stat.set(("\u2714 " if have_ac else "\u2718 ") +
                     ("Assetto Corsa folder found" if have_ac else
-                     "Assetto Corsa folder not set or acs.exe not found there (set it below)"))
+                     "Assetto Corsa folder is not set, or acs.exe is not in it (set it below)"))
         car_code = lua_code = None
         if have_ac:
             try:
@@ -1358,7 +1339,7 @@ def main():
             except OSError as e:
                 car_txt = lua_txt = f"Could not check ({e})"
         else:
-            car_txt = lua_txt = "Cannot check until the Assetto Corsa folder is set"
+            car_txt = lua_txt = "Set the Assetto Corsa folder first"
         car_stat.set(("\u2714 " if car_code == "ok" else "\u2718 ") + car_txt)
         lua_stat.set(("\u2714 " if lua_code == "ok" else "\u2718 ") + lua_txt)
         refresh_cloud_status()
@@ -1370,20 +1351,19 @@ def main():
         elif not c["cloud_url"].strip():
             nxt = "Next: enter the server address"
         elif not registered:
-            nxt = "Next: enter your name and invite code and press Register (or sign in with a link code from another device)"
+            nxt = "Next: enter your name and invite code and press Register, or sign in with a link code"
         else:
-            nxt = "Setup is complete. Next: step 2, Vanilla check"
+            nxt = "Setup is done. Next: step 2, Vanilla check"
         next_step.set(nxt)
         return nxt.startswith("Setup is complete")
 
     hooks.append(lambda: refresh_cloud_status())
     hooks.append(lambda: refresh_setup())
-    hooks.append(purge_hook)
     hooks.append(upload_hook)
     hooks.append(conditions_hook)
     refresh_cloud_status()
 
-    # tab order follows the workflow: set up, check the tracks, run and upload, then the cars and their classes
+    # tab order follows the workflow: set up, check the tracks, run and upload, then cars and classes
     for page, title in ((ts_page, "1. Setup"), (tv_page, "2. Vanilla check"), (t1_page, "3. Benchmark"),
                         (tc, "4. Cars & ratings")):
         nb.add(page, text=title)
@@ -1393,7 +1373,7 @@ def main():
             refresh_setup()
         if nb.select() == str(tc):
             cars_refresh()
-            live_refresh()          # only if the last answer is older than a minute
+            live_refresh()          # only if the last answer is over a minute old
 
     nb.bind("<<NotebookTabChanged>>", tab_changed)
 
@@ -1416,59 +1396,55 @@ def main():
             return
         if state["proc"]:
             stop()
-        purge_downloaded()
         save_cfg()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     update_conditions_panel()
     if refresh_setup():
-        nb.select(tv_page)         # setup is done: start at step 2
+        nb.select(tv_page)         # setup is done, start at step 2
     else:
-        nb.select(ts_page)         # first run or something missing: start at step 1
+        nb.select(ts_page)         # first run or something missing, start at step 1
     if cfg()["cloud_url"].strip():
         root.after(400, lambda: refresh_conditions(quiet=True))
         root.after(1500, lambda: live_refresh(force=True))
-    purge_downloaded()  # never leave downloaded server ratings lying around between sessions
     write("Ready.\n")
     poll()
     root.mainloop()
 
 
 def script_command(cmd):
-    """Command line that runs one of the app's scripts (cmd = ["ac_lap_bench.py", args...]).
-    From source that is python -u script.py. In the single exe there are no script files: the exe starts itself
-    with --ac-run and runs the embedded module (see run_embedded_script)."""
+    """Command line that runs one of the app's scripts (cmd = ["ac_lap_bench.py", args...]). From source that's
+    python -u script.py. The single exe has no script files, so it starts itself with --ac-run and runs the embedded module
+    (see run_embedded_script).
+    """
     if ac_paths.FROZEN:
         return [ac_paths.app_executable(), "--ac-run", *cmd]
     return [sys.executable, "-u", *cmd]
 
 
 def script_env():
-    # the job processes must keep their settings and results in the same folder as this window
+    # the job processes have to keep settings and results in the same folder as this window
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1", AC_BENCH_DATA=str(ac_paths.DATA))
-    if ac_paths.FROZEN and hasattr(sys, "_MEIPASS"):
-        # a PyInstaller one-file exe starting itself as an independent process must unpack its own copy of the embedded files
-        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
 
 
 def run_embedded_script(argv):
-    """argv = ["ac_lap_bench.py", args...]: run that embedded module as __main__ (used by the exe's child processes)."""
+    """Run an embedded module as __main__. argv is ["ac_lap_bench.py", args...]. Used by the exe's child processes."""
     import runpy
-    for name, fd in (("stdout", 1), ("stderr", 2)):      # a windowed exe may start without console streams
+    for name, fd in (("stdout", 1), ("stderr", 2)):      # a windowed exe can start without console streams
         if getattr(sys, name) is None:
             try:
                 setattr(sys, name, open(fd, "w", encoding="utf-8", buffering=1, closefd=False))
             except OSError:
                 setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
-    ac_paths.utf8_output()      # after the stream repair above: the log reads UTF-8
+    ac_paths.utf8_output()      # after the stream repair above, so the log reads UTF-8
     script, rest = argv[0], argv[1:]
     sys.argv = [script, *rest]
     name = Path(script).stem
-    # Compiled modules (Nuitka) have no code object, so runpy cannot run them: import the module and call its main().
-    # Source and PyInstaller builds keep using runpy, which runs the module exactly as "python script.py" would.
-    compiled = "__compiled__" in globals() or (ac_paths.FROZEN and not hasattr(sys, "_MEIPASS"))
+    # Compiled (Nuitka) modules have no code object, so runpy can't run them: import the module and call its main().
+    # From source, runpy runs the module just like "python script.py".
+    compiled = "__compiled__" in globals()
     try:
         if compiled:
             import importlib
@@ -1486,9 +1462,10 @@ def run_embedded_script(argv):
 
 
 def selfcheck():
-    """--ac-selfcheck: confirm this build carries everything it needs (used by the CI build; exit 0 = fine).
-    Checks the embedded race template, benchmark car and Lua logger, that every module the app starts as a job is
-    importable, and that the folder for settings and results is writable."""
+    """--ac-selfcheck: confirm this build has everything it needs (the CI build uses it; exit 0 means fine). Checks the embedded
+    race template, benchmark car and Lua logger, that every module the app starts as a job can be imported, and that the
+    folder for settings and results is writable.
+    """
     import importlib
     for name, fd in (("stdout", 1), ("stderr", 2)):
         if getattr(sys, name) is None:
@@ -1510,13 +1487,12 @@ def selfcheck():
     lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
     check("ac_bench.lua" in lua and "manifest.ini" in lua, f"embedded Lua logger: {lua}")
     for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
-                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_classify_laps",
-                "ac_grid_builder", "tkinter"):
+                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "tkinter"):
         try:
             importlib.import_module(mod)
             ok = True
         except cond.ConditionsUnavailable:
-            ok = True     # imported fine; it only wants the server's conditions at run time
+            ok = True     # imported fine, it only needs the server's conditions at run time
         except Exception as e:
             ok = False
             print("      " + type(e).__name__ + ": " + str(e))
@@ -1525,17 +1501,17 @@ def selfcheck():
         job = subprocess.run(script_command(["ac_paths.py"]), cwd=HERE, capture_output=True, text=True, timeout=120,
                              env=script_env(), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         check(job.returncode == 0 and "DATA=" in job.stdout,
-              f"the app can start a job from inside itself: {script_command(['ac_paths.py'])[0]}"
+              f"the app can start a job: {script_command(['ac_paths.py'])[0]}"
               + ("" if job.returncode == 0 else f" (exit {job.returncode}: {(job.stderr or job.stdout).strip()[:200]})"))
     except Exception as e:
-        check(False, f"the app cannot start a job from inside itself: {type(e).__name__}: {e}")
+        check(False, f"the app can't start a job: {type(e).__name__}: {e}")
     try:
         probe = HERE / ".selfcheck"
         probe.write_text("x", encoding="utf-8")
         probe.unlink()
-        check(True, f"settings and results folder is writable: {HERE}")
+        check(True, f"settings and results folder can be written to: {HERE}")
     except OSError as e:
-        check(False, f"settings and results folder is not writable: {HERE} ({e})")
+        check(False, f"settings and results folder can't be written to: {HERE} ({e})")
     print("SELFCHECK " + ("FAILED" if bad else "PASSED"))
     return 1 if bad else 0
 

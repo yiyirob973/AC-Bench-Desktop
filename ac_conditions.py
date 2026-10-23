@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""
-Benchmark conditions, as published by the server (GET /v1/conditions).
+"""Benchmark conditions as the server publishes them (GET /v1/conditions).
 
-The app does not decide the baseline: profile, tracks, lap counts, batch limit and the canonical environment
-(digests of the vanilla track folders and of acs.exe) are all taken from the server. Every action that depends on
-them (benchmark, vanilla check, upload) fetches them first with If-None-Match; the last answer is kept in
-conditions_cache.json only so the server can reply "304 not modified". A cache older than 12 hours, or one fetched from
-another server, is refused: fetch again.
+The app doesn't decide the baseline. Profile, tracks, lap counts, batch limit and the canonical environment (digests of
+the vanilla track folders and of acs.exe) all come from the server. Anything that depends on them (benchmark, vanilla
+check, upload) fetches them first with If-None-Match. The last answer is kept in conditions_cache.json only so the
+server can reply "304 not modified". A cache older than 12 hours, or one from another server, is refused and has to be
+fetched again.
 
   python ac_conditions.py fetch [--server https://example.org]
   python ac_conditions.py show
@@ -22,11 +21,11 @@ HERE = ac_paths.DATA
 CACHE = HERE / "conditions_cache.json"
 CLOUD_CFG = HERE / "cloud_config.json"
 MAX_AGE_S = 12 * 3600
-ALLOW_STALE = False  # the GUI sets this in its own process only, to DISPLAY the last known conditions while offline
+ALLOW_STALE = False  # only the GUI sets this, in its own process, to show the last known conditions while offline
 
 
 class ConditionsUnavailable(RuntimeError):
-    """The server's benchmark conditions cannot be used (not downloaded, too old, invalid, unreachable)."""
+    """The server's benchmark conditions can't be used (not downloaded, too old, invalid or unreachable)."""
 
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
@@ -40,7 +39,7 @@ def _int(d, key, lo, hi):
 
 
 def validate(data):
-    """Check a /v1/conditions answer; -> clean dict. Anything unexpected raises ConditionsUnavailable."""
+    """Check a /v1/conditions answer and return a clean dict. Anything unexpected raises ConditionsUnavailable."""
     if not isinstance(data, dict):
         raise ConditionsUnavailable("The server's conditions are not a JSON object.")
     if data.get("format") != 1:
@@ -131,7 +130,7 @@ def _read_cache():
 
 # ---------------------------------------------------------------- fetch / load
 def fetch(server=None, say=print):
-    """GET /v1/conditions (If-None-Match with the last ETag) -> (clean conditions, 'updated' | 'unchanged')."""
+    """GET /v1/conditions (If-None-Match with the last ETag). Returns (clean conditions, 'updated' | 'unchanged')."""
     if server:
         set_server(server)
     url = server_url()
@@ -171,9 +170,10 @@ def fetch(server=None, say=print):
 
 
 def fetch_baseline_tracks(server=None):
-    """Operator use: the profile and track list the server publishes, WITHOUT requiring a canonical environment.
-    A brand-new server has no environment yet (that is what the reference is for), so fetch()/load() would refuse it.
-    Nothing is cached and nothing but the track list and profile is trusted. -> (profile, [track specs])."""
+    """For the server operator: the profile and track list the server publishes, without needing a canonical environment.
+    A brand-new server has none yet (that's what the reference is for), so fetch() and load() would refuse it. Nothing is
+    cached and only the track list and profile are trusted. Returns (profile, [track specs]).
+    """
     if server:
         set_server(server)
     url = server_url()
@@ -205,7 +205,7 @@ def fetch_baseline_tracks(server=None):
 
 
 def load():
-    """Last fetched conditions (clean dict). Refuses a missing, foreign or too-old cache; never invents values."""
+    """The last fetched conditions as a clean dict. A missing, foreign or too-old cache is refused; nothing is made up."""
     c = _read_cache()
     if not c or not c.get("data"):
         raise ConditionsUnavailable("The benchmark conditions have not been downloaded from the server yet. "
@@ -220,7 +220,7 @@ def load():
 
 
 def load_any():
-    """Like load(), but None instead of an error (for display)."""
+    """Like load(), but returns None instead of raising (for display)."""
     try:
         return load()
     except ConditionsUnavailable:

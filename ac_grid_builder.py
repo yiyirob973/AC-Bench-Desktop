@@ -32,7 +32,7 @@ def load(path):
 
 
 def largest_window(rows, max_gap):
-    """Window of width max_gap (in % lap time) containing the most cars."""
+    """Window of width max_gap (in % lap time) that holds the most cars."""
     best = []
     for r in rows:
         lo = r["gap_pct"]
@@ -51,7 +51,7 @@ def around_car(rows, car_id, max_gap):
 
 
 def tightest(rows, size):
-    """Contiguous run of `size` cars with the smallest lap-time spread."""
+    """Run of `size` neighbouring cars with the smallest lap-time spread."""
     if len(rows) < size:
         return rows
     i = min(range(len(rows) - size + 1),

@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""
-Start a race with AC's own "Start race" command instead of clicking the Drive button.
+"""Starts a race with AC's own "Start race" command instead of clicking the Drive button.
 
-Content Manager > Settings > Assetto Corsa > Controls > System > Race has a "Start race" row. It is stored in
+Content Manager > Settings > Assetto Corsa > Controls > System > Race has a "Start race" row. It's stored in
 Documents/Assetto Corsa/cfg/controls.ini as
 
     [__CM_START_SESSION]
     KEY=<Windows virtual-key code>
 
-and the hotkey is Ctrl + that key. This module makes sure that entry exists (so the user never has to set it
-up in Content Manager), and tells ac_input.py which key to press. An existing binding of the user is kept.
+and the hotkey is Ctrl + that key. This module makes sure the entry exists (so nobody has to set it up in Content
+Manager) and tells ac_input.py which key to press. A binding the user already has is kept.
 
-Who acts on the hotkey inside the game: Custom Shaders Patch handles the hotkeys listed in
-<AC>/extension/config/data_hotkeys_supported.txt itself; Content Manager handles the others, but only for games it
-launched. csp_handles_start_session() reports which case this install is.
+Who handles the hotkey in the game: Custom Shaders Patch handles the hotkeys listed in
+<AC>/extension/config/data_hotkeys_supported.txt itself. Content Manager handles the rest, but only for games it
+launched. csp_handles_start_session() tells you which case this install is.
 
   python ac_controls.py status --docs-dir "<Documents/Assetto Corsa>" [--ac-dir "<AC>"]
   python ac_controls.py setup  --docs-dir "<Documents/Assetto Corsa>" [--ac-dir "<AC>"]
@@ -26,13 +25,13 @@ from pathlib import Path
 import ac_paths  # noqa: F401  (keeps the packaged build's module list complete)
 
 SECTION = "__CM_START_SESSION"
-DEFAULT_VK = 0x7B            # F12: not a toggle key, nothing else in AC needs Ctrl+F12
+DEFAULT_VK = 0x7B            # F12 isn't a toggle key and nothing else in AC uses Ctrl+F12
 BACKUP_NAME = "controls.ini.acbench.bak"
 _HEADER = re.compile(r"^\s*\[([^\]]*)\]\s*$")
-# Content Manager writes the key as hexadecimal followed by the key's name, e.g.  KEY=0x4F ; O   (older/other tools: KEY=79)
+# Content Manager writes the key as hex followed by its name, e.g. KEY=0x4F ; O (older tools write KEY=79)
 _KEY = re.compile(r"^\s*KEY\s*=\s*(-?(?:0[xX][0-9A-Fa-f]+|\d+))\s*(?:[;#].*)?$", re.IGNORECASE)
-# Ctrl + these letters are also shortcuts built into AC itself (ABS, TC, hide apps, restart session, names, mouse steering,
-# auto gearbox, racing line, replay, slow motion, virtual desktops). A key the user chose is still used; the log just says so.
+# Ctrl + these letters are also AC shortcuts (ABS, TC, hide apps, restart session, names, mouse steering, auto gearbox,
+# racing line, replay, slow motion, virtual desktops). A key the user chose is still used, the log just mentions it.
 BUILTIN_CTRL = {ord(c): n for c, n in (("A", "ABS"), ("T", "traction control"), ("H", "hide apps"), ("O", "restart session"),
                                        ("L", "driver names"), ("M", "mouse steering"), ("G", "automatic gearbox"),
                                        ("I", "racing line"), ("R", "replay"), ("S", "slow motion"), ("U", "virtual desktops"))}
@@ -78,7 +77,7 @@ def _to_int(text):
 
 
 def _find_keys(lines, start, end):
-    """[(line index, value)] of every KEY= line inside the section (decimal or 0x hex, optional comment)."""
+    """[(line index, value)] for every KEY= line in the section (decimal or 0x hex, optional comment)."""
     out = []
     for i in range(start + 1, end):
         m = _KEY.match(lines[i].rstrip("\r"))
@@ -88,13 +87,13 @@ def _find_keys(lines, start, end):
 
 
 def _effective(keys):
-    """The key that counts: with duplicate KEY lines the last valid one wins, as in any ini reader."""
+    """The key that counts. With duplicate KEY lines the last valid one wins, like any ini reader."""
     good = [v for _, v in keys if v > 0]
     return good[-1] if good else None
 
 
 def _canonical(vk):
-    return "KEY=0x%02X ; %s" % (vk, vk_name(vk))      # the way Content Manager writes it
+    return "KEY=0x%02X ; %s" % (vk, vk_name(vk))      # same format Content Manager writes
 
 
 def read_start_hotkey(docs_dir):
@@ -113,12 +112,13 @@ def read_start_hotkey(docs_dir):
 
 def ensure_start_hotkey(docs_dir, default_vk=DEFAULT_VK, say=print):
     """Make sure 'Start race' has a usable key in controls.ini and return it.
-    - a binding that is already there is ALWAYS used and never changed (Content Manager writes it as hex with a
-      comment, e.g. KEY=0x4F ; O);
-    - duplicate KEY lines are cleaned up so exactly one is left;
-    - only when nothing is set, Ctrl+F12 is written, the way Content Manager writes it.
-    Only this one section is touched; the rest of the file is kept byte for byte, and a backup of the original is saved
-    once as controls.ini.acbench.bak. -> (virtual-key code or None, what happened)."""
+    - A binding that's already there is always used and never changed (Content Manager writes it as hex with a comment,
+      e.g. KEY=0x4F ; O).
+    - Duplicate KEY lines are cleaned up so exactly one is left.
+    - Only when nothing is set, Ctrl+F12 is written, the way Content Manager writes it.
+    Only this one section is touched. The rest of the file is kept byte for byte and a backup of the original is saved once
+    as controls.ini.acbench.bak. Returns (virtual-key code or None, what happened).
+    """
     path = controls_ini(docs_dir)
     if not path.is_file():
         return None, ("controls.ini not found in %s: start Assetto Corsa once (or Content Manager) so it is created"
@@ -182,7 +182,7 @@ def raw_section(docs_dir):
 
 
 def content_manager_running():
-    """True/False if Content Manager is running (Windows only), None if that cannot be told."""
+    """True/False if Content Manager is running (Windows only), None if it can't be told."""
     if sys.platform != "win32":
         return None
     try:
@@ -195,8 +195,9 @@ def content_manager_running():
 
 
 def csp_handles_start_session(ac_dir):
-    """True: Custom Shaders Patch handles the 'Start race' hotkey inside the game. False: it does not (then only
-    Content Manager does, for games it started itself). None: cannot tell (no Custom Shaders Patch file)."""
+    """True if Custom Shaders Patch handles the 'Start race' hotkey inside the game. False if it doesn't (then only Content
+    Manager does, and only for games it started). None if it can't be told (no Custom Shaders Patch file).
+    """
     p = Path(ac_dir) / "extension" / "config" / "data_hotkeys_supported.txt"
     try:
         names = {x.strip() for x in p.read_text(encoding="utf-8", errors="replace").splitlines()}

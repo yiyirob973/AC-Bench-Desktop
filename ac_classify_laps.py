@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""
-Turns lap_results.json (from ac_lap_bench.py) into car_classes.csv, the file ac_grid_builder.py
-and ac_tag_writer.py read. The class assignment itself lives in ac_rating.py and follows
-grid_dynamics.txt: median lap score (lap 1 dropped), mean % delta over the tracks, natural
-class borders (gap analysis + Jenks) within a max spread, flags for borderline and
-high-variance cars.
+"""Turns lap_results.json (from ac_lap_bench.py) into car_classes.csv, which ac_grid_builder.py and ac_tag_writer.py
+read. The class assignment itself is in ac_rating.py: median lap score (lap 1 dropped), mean % delta over the tracks,
+natural class borders (gap analysis + Jenks) within a maximum spread, and flags for borderline and high-variance cars.
 
   python ac_classify_laps.py lap_results.json "<AC>/content/cars" --class-gap 2.0
   python ac_classify_laps.py lap_results.json "<AC>/content/cars" --classes 6        # exactly 6 classes
