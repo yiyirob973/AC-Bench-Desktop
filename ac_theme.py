@@ -4,27 +4,28 @@ Everything that decides how the window looks lives here, so the GUI only has to 
 """
 import ac_paths
 
-# Backgrounds, darkest to lightest
-BG = "#111d33"          # window background (the navy of the badge)
-BG_RAISED = "#182a45"   # tab headers, buttons, the header strip
-BG_FIELD = "#0c1627"    # inputs, lists and the log
-ROW_ALT = "#14233b"     # every other row in the car lists
-BORDER = "#2d5972"      # the ring of the badge: outlines and dividers
+# Surfaces: three close steps of the logo's navy, so the window reads as one calm block instead of patches of color
+BG = "#101a2b"          # window and tab pages
+BG_RAISED = "#16233a"   # buttons, tab strip, list headers
+BG_FIELD = "#0b1422"    # inputs, lists and the log
+ROW_ALT = "#0e182a"     # every other row in the car lists (barely different on purpose)
+BORDER = "#25374f"      # hairlines; quiet on purpose, the logo's brighter ring blue is only used for focus
+FOCUS = "#3f8da6"       # the outline of the field or button you're working in
 
-# Accents (the cyan of the AC frame and the gauge)
-ACCENT = "#97e7f2"
-ACCENT_STRONG = "#74d4e0"   # main buttons, progress
-ACCENT_DIM = "#23435a"      # hover, selected rows
+# Accent: the logo's cyan, softened. Only the main action, the selected row/tab and progress use it.
+ACCENT = "#5cc8d8"
+ACCENT_HOVER = "#7ad8e5"
+ACCENT_DIM = "#1b3a52"      # selected rows, hover on normal buttons
 
-# Text
-TEXT = "#ffffff"
-TEXT_MUTED = "#9fb3c8"
-TEXT_DISABLED = "#5d7087"
+# Text: off-white and two greys. Hierarchy comes from these, not from color.
+TEXT = "#e6edf5"
+TEXT_MUTED = "#8fa3b8"
+TEXT_DISABLED = "#55677d"
 
-# Status colors for the lists
-OK = "#5fd3a0"
-WARN = "#f2c46d"
-ERROR = "#ef6f6f"
+# Status colors for the lists: muted so a long list doesn't look like a traffic light
+OK = "#6bbf9a"
+WARN = "#d9b062"
+ERROR = "#e07a7a"
 
 ICON_ICO = ac_paths.res("branding", "ac-bench.ico")
 ICON_PNG = ac_paths.res("branding", "ac-bench.png")
@@ -69,66 +70,93 @@ def header_logo():
 
 
 def apply(root, style, bold_font):
-    """Colors for every widget the app uses. Call it before any widget is created."""
+    """Colors for every widget the app uses. Call it before any widget is created. Everything is flat: no bevels."""
     # plain tk widgets (they don't read ttk styles)
     for pattern, value in (
         ("*Toplevel.background", BG), ("*Frame.background", BG), ("*Canvas.background", BG),
-        ("*Text.background", BG_FIELD), ("*Text.foreground", TEXT), ("*Text.insertBackground", ACCENT),
+        ("*Text.background", BG_FIELD), ("*Text.foreground", TEXT), ("*Text.insertBackground", TEXT),
         ("*Text.selectBackground", ACCENT_DIM), ("*Text.selectForeground", TEXT),
-        ("*Text.highlightThickness", 1), ("*Text.highlightBackground", BORDER), ("*Text.highlightColor", ACCENT),
-        ("*Text.borderWidth", 0),
+        ("*Text.highlightThickness", 1), ("*Text.highlightBackground", BORDER), ("*Text.highlightColor", FOCUS),
+        ("*Text.borderWidth", 0), ("*Text.padX", 6), ("*Text.padY", 4),
         ("*Listbox.background", BG_FIELD), ("*Listbox.foreground", TEXT),
         ("*Listbox.selectBackground", ACCENT_DIM), ("*Listbox.selectForeground", TEXT),
+        ("*Listbox.highlightThickness", 0), ("*Listbox.borderWidth", 0),
         ("*TCombobox*Listbox.background", BG_FIELD), ("*TCombobox*Listbox.foreground", TEXT),
         ("*TCombobox*Listbox.selectBackground", ACCENT_DIM), ("*TCombobox*Listbox.selectForeground", TEXT),
     ):
         root.option_add(pattern, value)
 
+    # clam draws a light and a dark edge for a 3D look; making them the border color flattens everything
     style.configure(".", background=BG, foreground=TEXT, fieldbackground=BG_FIELD, bordercolor=BORDER,
-                    lightcolor=BORDER, darkcolor=BORDER, troughcolor=BG_FIELD, focuscolor=ACCENT,
-                    insertcolor=ACCENT, selectbackground=ACCENT_DIM, selectforeground=TEXT)
+                    lightcolor=BORDER, darkcolor=BORDER, troughcolor=BG_FIELD, focuscolor=FOCUS,
+                    insertcolor=TEXT, selectbackground=ACCENT_DIM, selectforeground=TEXT)
     style.map(".", foreground=[("disabled", TEXT_DISABLED)])
 
     style.configure("TLabel", background=BG, foreground=TEXT)
     style.configure("Muted.TLabel", foreground=TEXT_MUTED)
     style.configure("Bold.TLabel", font=bold_font)
-    style.configure("Header.TLabel", background=BG_RAISED, foreground=TEXT)
-    style.configure("TLabelframe", background=BG, bordercolor=BORDER)
-    style.configure("TLabelframe.Label", background=BG, foreground=ACCENT, font=bold_font)
+    style.configure("Header.TLabel", background=BG, foreground=TEXT)
+    style.configure("TLabelframe", background=BG, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+    style.configure("TLabelframe.Label", background=BG, foreground=TEXT, font=bold_font)
+    style.configure("TSeparator", background=BORDER)
 
-    style.configure("TButton", background=BG_RAISED, foreground=TEXT, bordercolor=BORDER, focusthickness=1)
+    # buttons: flat panels with a hairline; the one main action per tab is solid accent
+    style.configure("TButton", background=BG_RAISED, foreground=TEXT, bordercolor=BORDER,
+                    lightcolor=BG_RAISED, darkcolor=BG_RAISED, focusthickness=1, focuscolor=FOCUS, relief="flat")
     style.map("TButton",
               background=[("disabled", BG), ("pressed", ACCENT_DIM), ("active", ACCENT_DIM)],
-              bordercolor=[("active", ACCENT), ("focus", ACCENT)])
-    style.configure("Accent.TButton", background=ACCENT_STRONG, foreground=BG, bordercolor=ACCENT_STRONG)
+              lightcolor=[("pressed", ACCENT_DIM), ("active", ACCENT_DIM)],
+              darkcolor=[("pressed", ACCENT_DIM), ("active", ACCENT_DIM)],
+              bordercolor=[("disabled", BORDER), ("focus", FOCUS), ("active", FOCUS)])
+    style.configure("Accent.TButton", background=ACCENT, foreground="#08121f", bordercolor=ACCENT,
+                    lightcolor=ACCENT, darkcolor=ACCENT, focuscolor="#08121f")
     style.map("Accent.TButton",
-              background=[("disabled", ACCENT_DIM), ("pressed", ACCENT), ("active", ACCENT)],
+              background=[("disabled", BG_RAISED), ("pressed", ACCENT), ("active", ACCENT_HOVER)],
+              lightcolor=[("disabled", BG_RAISED), ("active", ACCENT_HOVER)],
+              darkcolor=[("disabled", BG_RAISED), ("active", ACCENT_HOVER)],
+              bordercolor=[("disabled", BORDER), ("active", ACCENT_HOVER)],
               foreground=[("disabled", TEXT_DISABLED)])
 
-    style.configure("TNotebook", background=BG, bordercolor=BORDER)
-    style.configure("TNotebook.Tab", background=BG_RAISED, foreground=TEXT_MUTED, bordercolor=BORDER)
+    # tabs: the strip is a shade darker than the page; the open tab merges into the page and turns white
+    style.configure("TNotebook", background=BG_FIELD, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
+                    tabmargins=(0, 0, 0, 0))
+    style.configure("TNotebook.Tab", background=BG_FIELD, foreground=TEXT_MUTED, bordercolor=BORDER,
+                    lightcolor=BG_FIELD, darkcolor=BG_FIELD)
     style.map("TNotebook.Tab",
-              background=[("selected", BG), ("active", ACCENT_DIM)],
-              foreground=[("selected", ACCENT), ("active", TEXT)])
+              background=[("selected", BG), ("active", BG_RAISED)],
+              lightcolor=[("selected", BG), ("active", BG_RAISED)],
+              darkcolor=[("selected", BG), ("active", BG_RAISED)],
+              foreground=[("selected", TEXT), ("active", TEXT)])
 
-    style.configure("Treeview", background=BG_FIELD, fieldbackground=BG_FIELD, foreground=TEXT, bordercolor=BORDER)
+    # lists: quiet headers in muted text, soft selection, hairline between rows
+    style.configure("Treeview", background=BG_FIELD, fieldbackground=BG_FIELD, foreground=TEXT, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER)
     style.map("Treeview", background=[("selected", ACCENT_DIM)], foreground=[("selected", TEXT)])
-    style.configure("Treeview.Heading", background=BG_RAISED, foreground=ACCENT, bordercolor=BORDER, relief="flat")
-    style.map("Treeview.Heading", background=[("active", ACCENT_DIM)])
+    style.configure("Treeview.Heading", background=BG_RAISED, foreground=TEXT_MUTED, bordercolor=BORDER,
+                    lightcolor=BG_RAISED, darkcolor=BG_RAISED, relief="flat", font=bold_font)
+    style.map("Treeview.Heading", background=[("active", ACCENT_DIM)], foreground=[("active", TEXT)])
 
     for name in ("TEntry", "TCombobox", "TSpinbox"):
-        style.configure(name, fieldbackground=BG_FIELD, foreground=TEXT, bordercolor=BORDER, insertcolor=ACCENT,
-                        arrowcolor=ACCENT, background=BG_RAISED)
-        style.map(name, bordercolor=[("focus", ACCENT)], fieldbackground=[("disabled", BG), ("readonly", BG_FIELD)],
-                  foreground=[("disabled", TEXT_DISABLED)])
+        style.configure(name, fieldbackground=BG_FIELD, foreground=TEXT, bordercolor=BORDER, insertcolor=TEXT,
+                        lightcolor=BG_FIELD, darkcolor=BG_FIELD, arrowcolor=TEXT_MUTED, background=BG_RAISED,
+                        padding=3)
+        style.map(name, bordercolor=[("focus", FOCUS), ("hover", FOCUS)],
+                  lightcolor=[("focus", FOCUS)], darkcolor=[("focus", FOCUS)],
+                  fieldbackground=[("disabled", BG), ("readonly", BG_FIELD)],
+                  foreground=[("disabled", TEXT_DISABLED)], arrowcolor=[("active", TEXT)])
 
     for name in ("TCheckbutton", "TRadiobutton"):
         style.configure(name, background=BG, foreground=TEXT, indicatorbackground=BG_FIELD,
-                        indicatorforeground=BG, upperbordercolor=BORDER, lowerbordercolor=BORDER)
-        style.map(name, background=[("active", BG)], indicatorbackground=[("selected", ACCENT_STRONG)],
+                        indicatorforeground="#08121f", upperbordercolor=BORDER, lowerbordercolor=BORDER)
+        style.map(name, background=[("active", BG)],
+                  indicatorbackground=[("selected", ACCENT), ("active", BG_RAISED)],
+                  upperbordercolor=[("focus", FOCUS)], lowerbordercolor=[("focus", FOCUS)],
                   foreground=[("disabled", TEXT_DISABLED)])
 
-    style.configure("TScrollbar", background=BG_RAISED, troughcolor=BG_FIELD, bordercolor=BORDER, arrowcolor=ACCENT)
-    style.map("TScrollbar", background=[("active", ACCENT_DIM)])
-    style.configure("TProgressbar", background=ACCENT_STRONG, troughcolor=BG_FIELD, bordercolor=BORDER)
-    style.configure("TSeparator", background=BORDER)
+    # scrollbars and progress: thin and low contrast
+    style.configure("TScrollbar", background="#22344d", troughcolor=BG, bordercolor=BG, lightcolor="#22344d",
+                    darkcolor="#22344d", arrowcolor=TEXT_MUTED, gripcount=0)
+    style.map("TScrollbar", background=[("active", "#2e4666"), ("pressed", "#2e4666")],
+              lightcolor=[("active", "#2e4666")], darkcolor=[("active", "#2e4666")])
+    style.configure("TProgressbar", background=ACCENT, troughcolor=BG_FIELD, bordercolor=BORDER,
+                    lightcolor=ACCENT, darkcolor=ACCENT)

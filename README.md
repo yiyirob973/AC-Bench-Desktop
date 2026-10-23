@@ -39,18 +39,19 @@ Because everything is fixed by the server, times from different cars and differe
 
 ## Look and feel
 
-The app uses the colors of the logo: a dark navy background, the blue ring for borders and two shades of cyan for
-buttons, selected tabs and headings. They're all defined in `ac_theme.py`, so changing one value there changes it
-everywhere. The logo shows in the title bar, the taskbar, the top of the window and on the exe itself.
+A dark navy theme taken from the logo. Surfaces are three close shades of the navy, borders are hairlines, and text is
+off-white with two greys for hierarchy. The logo's cyan is only used for the main action, the selected row and progress,
+so it stands out when it shows up. The colors are all defined in `ac_theme.py`. The logo shows in the title bar, the
+taskbar, the top of the window and on the exe itself.
 
 | Use | Color |
 |-----|-------|
-| Background | `#111d33` |
-| Raised panels, buttons | `#182a45` |
-| Inputs, lists, log | `#0c1627` |
-| Borders | `#2d5972` |
-| Accent | `#97e7f2` / `#74d4e0` |
-| Text | `#ffffff`, muted `#9fb3c8` |
+| Window | `#101a2b` |
+| Buttons, list headers | `#16233a` |
+| Inputs, lists, log | `#0b1422` |
+| Hairlines | `#25374f` |
+| Accent | `#5cc8d8` |
+| Text / muted | `#e6edf5` / `#8fa3b8` |
 
 ## Quick start
 

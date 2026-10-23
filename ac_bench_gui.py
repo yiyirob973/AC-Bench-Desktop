@@ -1377,14 +1377,14 @@ def main():
     # ======== bottom bar ========
     bar = ttk.Frame(root, padding=(10, 4))
     bar.pack(side="bottom", fill="x")
-    header = tk.Frame(root, background=ac_theme.BG_RAISED)
+    header = tk.Frame(root, background=ac_theme.BG)
     header.pack(side="top", fill="x")
     logo_img = ac_theme.header_logo()
     if logo_img is not None:
         ttk.Label(header, image=logo_img, style="Header.TLabel").pack(side="left", padx=(12, 8), pady=6)
     ttk.Label(header, text="AC Bench", style="Header.TLabel",
-              font=("Segoe UI", 14, "bold")).pack(side="left", pady=6)
-    tk.Frame(root, height=2, background=ac_theme.BORDER).pack(side="top", fill="x")
+              font=("Segoe UI", 13, "bold")).pack(side="left", pady=6)
+    tk.Frame(root, height=1, background=ac_theme.BORDER).pack(side="top", fill="x")
     nb.pack(fill="both", expand=True, padx=10, pady=(10, 6))
 
     log_btn = ttk.Button(bar, text="Show log", command=toggle_log)
