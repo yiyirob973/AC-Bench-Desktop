@@ -1,4 +1,14 @@
-# AC Bench Desktop
+<p align="center">
+  <img src="branding/ac-bench.png" alt="AC Bench logo" width="140">
+</p>
+
+<h1 align="center">AC Bench Desktop</h1>
+
+<p align="center">
+  Benchmark your Assetto Corsa cars and see how they stack up against everyone else's.
+</p>
+
+---
 
 The desktop app for benchmarking Assetto Corsa car mods against a fixed baseline. It has a Windows GUI, the benchmark
 runner, an in-game Lua logger and the local result handling.
@@ -19,11 +29,28 @@ Because everything is fixed by the server, times from different cars and differe
 - `ac_carid.py`, `ac_car_classifier.py`, `ac_rating.py`: identify cars by physics hash, read car data, rate results
 - `ac_track_check.py`: checks the vanilla tracks and `acs.exe`
 - `ac_cloud.py`, `ac_live.py`: talk to the server (upload, live car lookups)
+- `ac_theme.py`: the colors, window icon and logo
 - `apps/lua/ac_bench/`: the in-game Lua app. It logs AI lap times during benchmark races. Otherwise it keeps the
   `#Pride-<class>` car tags up to date (`class_sync.lua`, set up by the `config.json` the app writes during
-  *Install required files*).
+  *Install required files*). Its in-game icon is `icon.png`, a white version of the logo (AC tints app icons itself).
+- `branding/`: the logo (`ac-bench.ico` for the exe and window, PNGs for the window header and this README)
 - `bundled_car/`: the TV Car by EmilioGQ (https://www.overtake.gg/downloads/tv-car.45108/), which every run drives so
   results stay consistent between installs. It's never benchmarked itself, in any mode, and is never listed or tagged.
+
+## Look and feel
+
+The app uses the colors of the logo: a dark navy background, the blue ring for borders and two shades of cyan for
+buttons, selected tabs and headings. They're all defined in `ac_theme.py`, so changing one value there changes it
+everywhere. The logo shows in the title bar, the taskbar, the top of the window and on the exe itself.
+
+| Use | Color |
+|-----|-------|
+| Background | `#111d33` |
+| Raised panels, buttons | `#182a45` |
+| Inputs, lists, log | `#0c1627` |
+| Borders | `#2d5972` |
+| Accent | `#97e7f2` / `#74d4e0` |
+| Text | `#ffffff`, muted `#9fb3c8` |
 
 ## Quick start
 
@@ -154,7 +181,8 @@ server with `python server.py set-env --from track_reference.json`. Players then
 
 The GitHub workflow `.github/workflows/build.yml` builds `AC-Bench.exe` with **Nuitka**, which compiles the code to a
 native program (PyInstaller exes get flagged by antivirus products far more often). It needs `template_race.ini` in the
-repo and embeds it together with `bundled_car/` and `apps/lua/ac_bench/`.
+repo and embeds it together with `bundled_car/`, `apps/lua/ac_bench/` and `branding/`. The exe gets the logo as its file icon
+from `branding/ac-bench.ico`.
 
 - By default it builds one file. Every push to `dev` publishes it to the rolling `dev-latest` GitHub Release (direct
   download, with a `.sha256`). The Actions artifact holds the same file, wrapped in a zip because GitHub always does that.
@@ -191,7 +219,12 @@ AC-Bench-Desktop/
   ac_lap_bench.py
   ac_rating.py
   ac_tag_writer.py
+  ac_theme.py
   ac_track_check.py
+  branding/
+    ac-bench.ico
+    ac-bench.png
+    header.png
   apps/lua/ac_bench/
     ac_bench.lua
     class_sync.lua
