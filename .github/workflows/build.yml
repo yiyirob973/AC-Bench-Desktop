@@ -36,7 +36,7 @@ jobs:
       shell: pwsh
       run: |
         $missing = @()
-        foreach ($p in 'template_race.ini', 'bundled_car', 'apps/lua/ac_bench/ac_bench.lua', 'ac_bench_gui.py') {
+        foreach ($p in 'template_race.ini', 'bundled_car', 'apps/lua/ac_bench/ac_bench.lua', 'ac_bench_gui.py', 'branding/ac-bench.ico') {
           if (-not (Test-Path $p)) { $missing += $p }
         }
         if ($missing.Count -gt 0) {
@@ -66,6 +66,7 @@ jobs:
           --assume-yes-for-downloads `
           --enable-plugin=tk-inter `
           --windows-console-mode=disable `
+          --windows-icon-from-ico=branding/ac-bench.ico `
           --output-dir=build `
           --output-filename=AC-Bench.exe `
           --product-name="AC Bench" `
@@ -75,12 +76,12 @@ jobs:
           --file-version=1.0.0.${{ github.run_number }} `
           --include-data-files=template_race.ini=template_race.ini `
           --include-data-dir=bundled_car=bundled_car `
+          --include-data-dir=branding=branding `
           --include-data-dir=apps=apps `
           --include-module=ac_paths --include-module=ac_lap_bench --include-module=ac_cloud `
           --include-module=ac_conditions --include-module=ac_live --include-module=ac_tag_writer `
           --include-module=ac_track_check --include-module=ac_baseline --include-module=ac_rating `
-          --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input --include-module=ac_controls `
-          --include-module=ac_classify_laps --include-module=ac_grid_builder `
+          --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input --include-module=ac_controls --include-module=ac_theme `
           ac_bench_gui.py
         if ($LASTEXITCODE -ne 0) { Write-Error "Nuitka build failed"; exit 1 }
         $exe = if ($env:FOLDER -eq 'true') { 'build\ac_bench_gui.dist\AC-Bench.exe' } else { 'build\AC-Bench.exe' }
