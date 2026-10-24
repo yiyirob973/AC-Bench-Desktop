@@ -22,6 +22,98 @@ check and upload, and none of it can be changed here. A car's score on a track c
 
 Because everything is fixed by the server, times from different cars and different PCs can be compared directly.
 
+## Quick start
+
+Grab `AC-Bench.exe` from the [`dev-latest` release](../../releases/tag/dev-latest) and run it. Nothing needs installing.
+(See [Portable exe](#portable-exe) for how it's built.)
+
+To run from source instead, use `run_gui.bat` on Windows, or:
+
+```bash
+python ac_bench_gui.py
+```
+
+## Workflow
+
+The tabs go in the order you use them. The app opens on step 2 when setup is complete, and on step 1 otherwise. The bar
+along the bottom is always there: **Stop**, a progress bar, the current state, the server's conditions and **Show log**.
+
+### 1. Setup
+
+<p align="center">
+  <img src="docs/screenshots/setup.png" alt="The Setup tab" width="760">
+</p>
+
+- **Assetto Corsa folders:** the game folder and your Documents/Assetto Corsa folder. There's also an optional batch grouping CSV.
+- **Required files:** the benchmark car and the Lua logger. The checklist shows what's installed and up to date.
+  *Install / update required files* copies both into Assetto Corsa and replaces a different or damaged copy. This also
+  happens automatically before every benchmark.
+- **Server:** the server address, your name and an invite code, then **Register**. *Test connection* checks that the
+  server answers, and *Create link code for another device* is for [using the same account elsewhere](#same-account-on-another-device).
+- Two options sit under the registration: whether to also use classes that rest on a single submission (less
+  reliable), and whether the in-game app may [update car class tags by itself](#tags-from-inside-the-game) (off by default).
+
+### 2. Vanilla check
+
+<p align="center">
+  <img src="docs/screenshots/vanilla-check.png" alt="The Vanilla check tab" width="760">
+</p>
+
+Compares the benchmark tracks (every file, including the AI lines) and `acs.exe` with the server's environment.
+Benchmarks run this check first and stop if anything differs. The server only keeps fingerprints, so it can't tell you
+which file is different. If the check fails, verify the game files in Steam (**Ask Steam to verify game files**) and
+remove any extra files from the track folders.
+
+**Create track reference (server operator)** is for whoever runs the server, see
+[Creating the track reference](#creating-the-track-reference-server-operator).
+
+### 3. Benchmark
+
+<p align="center">
+  <img src="docs/screenshots/benchmark.png" alt="The Benchmark tab" width="760">
+</p>
+
+- **Conditions:** what the server has set (tracks, laps, AI level, weather, grip and so on). They're read-only here.
+  *Refresh* fetches them again.
+- **Which cars:** filters for what to run. A skip pattern like `tv TV` keeps the bundled TV car out. For cars that already
+  have results you can skip them, rerun everything selected, or rerun only certain ids, and failed cars can be retried
+  on the way. The probe fields are for [rebenchmarking](#rebenchmarking) specific cars.
+- **Run options:** *Cars per pack*. A pack runs on every track before the next pack starts. One car per pack is the
+  cleanest because the cars don't share the track. Bigger packs are faster. The server sets the upper limit.
+- **Buttons:** *Start benchmark*, *Dry run* (only counts the jobs) and *Probe cars*.
+- **Uploading:** each pack's times go to the server as soon as its cars finish, if you're registered. *Upload my
+  results (backup)* sends everything that hasn't been uploaded yet, see [Uploading results](#uploading-results).
+
+### 4. Cars & ratings
+
+<p align="center">
+  <img src="docs/screenshots/cars-and-ratings.png" alt="The Cars & ratings tab" width="760">
+</p>
+
+Two lists. **Local cars** shows the lap times measured on this PC, with a status per car: done, partial (some tracks
+have no valid time yet, shown in amber) or failed. **Server cars** shows the classes the server has given your
+installed cars. The local list can be filtered by name and by status.
+
+Select cars and press **Benchmark selected cars** to run them (only on the tracks where they have no valid time yet),
+or **Redo all tracks for selected**. See [Rebenchmarking](#rebenchmarking).
+**Apply server classes as tags** and **Benchmark cars missing from server** (installed cars the server has no class for
+yet) are on this tab as well.
+
+## In-game app
+
+The Lua app shows up in Assetto Corsa's app bar with the AC Bench icon. During a benchmark race it logs the AI lap times
+for the app. The rest of the time it does nothing, apart from keeping car class tags up to date if you turned that on.
+
+<p align="center">
+  <img src="docs/screenshots/in-game-idle.png" alt="The in-game window while checking cars" width="380">
+  &nbsp;
+  <img src="docs/screenshots/in-game-tags.png" alt="The in-game window while writing tags" width="380">
+</p>
+
+The window shows the mode (idle outside benchmark races) and how far the tag sync is: first it checks your cars, then
+it writes the tags, and the last line counts the cars, how many the server knows, and how many were tagged, already
+right or had a problem. More on that under [Tags from inside the game](#tags-from-inside-the-game).
+
 ## What's in here
 
 - `ac_bench_gui.py`: the GUI, for benchmarking, uploading and tagging
@@ -34,6 +126,7 @@ Because everything is fixed by the server, times from different cars and differe
   `#Pride-<class>` car tags up to date (`class_sync.lua`, set up by the `config.json` the app writes during
   *Install required files*). Its in-game icon is `icon.png`, a white version of the logo (AC tints app icons itself).
 - `branding/`: the logo (`ac-bench.ico` for the exe and window, PNGs for the window header and this README)
+- `docs/screenshots/`: the screenshots in this README
 - `bundled_car/`: the TV Car by EmilioGQ (https://www.overtake.gg/downloads/tv-car.45108/), which every run drives so
   results stay consistent between installs. It's never benchmarked itself, in any mode, and is never listed or tagged.
 
@@ -52,28 +145,6 @@ taskbar, the top of the window and on the exe itself.
 | Hairlines | `#25374f` |
 | Accent | `#5cc8d8` |
 | Text / muted | `#e6edf5` / `#8fa3b8` |
-
-## Quick start
-
-On Windows run `run_gui.bat`, or from Python:
-
-```bash
-python ac_bench_gui.py
-```
-
-## Workflow
-
-The tabs go in the order you use them:
-
-1. **Setup**: Assetto Corsa folders, *Install / update required files* (the benchmark car and the Lua logger; a
-   checklist shows what's missing and what to do next), server address, name, invite code, Register.
-2. **Vanilla check**: compare the benchmark tracks and `acs.exe` with the server's environment.
-3. **Benchmark**: the server's conditions (read-only), pick cars, start. Each pack's times are uploaded when its cars
-   finish. *Upload my results* is the backup.
-4. **Cars & ratings**: your local ratings and the live server classes, **Apply server classes as tags**, and
-   **Benchmark cars missing from server** (installed cars the server has no class for yet).
-
-The app opens on step 2 when setup is complete, and on step 1 otherwise.
 
 ## The server
 
@@ -105,10 +176,12 @@ The Lua app can do the same thing on its own. A short while after a race loads i
 the server about just those and writes the same `#Pride-<class>` tags, using the same backup rule.
 
 - It never runs in online races, or in benchmark races.
-- It works while you drive too, in small steps: one car hashed or one tag written every 0.75 seconds (every 0.25
-  seconds when you're stopped). While the car is moving it only hashes cars with a small amount of physics data (under
-  about 600 KB), so no step takes more than a couple of milliseconds. Bigger cars wait for a later check or until you're
-  stopped, and it does nothing while the frame rate is below about 40 fps.
+- It's built not to be felt. Every frame it gets a small time budget (about 2 ms while you're stopped, 0.5 ms while
+  you're moving) and stops as soon as it's used up. Reading and hashing a big file can't be split up, so that happens one
+  file at a time with a pause afterwards that is several times as long as the file took. While you're moving it only
+  touches small files, and cars with bigger ones wait until you stop. A car with a very large file (over about 768 KB)
+  is skipped and counted in the in-game window; **Apply server classes as tags** in the desktop app takes care of those.
+  It backs off for a few seconds when a frame takes very long and does nothing while the frame rate is below about 45 fps.
 - It waits 45 seconds after the race loads before it starts. The first run over a big collection takes a few minutes
   because every car has to be hashed. After that, only cars that changed are hashed again.
 - After a check it doesn't run again for 6 hours. **Check now** in the in-game window runs it right away.
@@ -226,6 +299,7 @@ AC-Bench-Desktop/
     ac-bench.ico
     ac-bench.png
     header.png
+  docs/screenshots/
   apps/lua/ac_bench/
     ac_bench.lua
     class_sync.lua
