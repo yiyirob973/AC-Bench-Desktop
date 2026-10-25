@@ -5,6 +5,7 @@ Rather than downloading the whole class export and matching it by hand, the app 
 per request). The answer is current when it's asked for and is kept in memory only. Nothing from the server's ratings is
 written to disk.
 """
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -46,6 +47,55 @@ def _sig(car_dir):
     return out
 
 
+def _fingerprint(car_dir):
+    """Short fingerprint of a car's physics files by name and size only. The in-game app computes the same one from
+    its own folder listing, so when they match it can take the hash from the list below without opening any file."""
+    items = []
+    base = Path(car_dir)
+    for name in ("data.acd", "collider.ini"):
+        p = base / name
+        try:
+            if p.is_file():
+                items.append("%s:%d" % (name, p.stat().st_size))
+        except OSError:
+            pass
+    ddir = base / "data"
+    if ddir.is_dir():
+        for p in ddir.rglob("*"):
+            try:
+                if p.is_file():
+                    items.append("data/%s:%d" % (p.relative_to(ddir).as_posix(), p.stat().st_size))
+            except OSError:
+                pass
+    items.sort()
+    return hashlib.sha256("|".join(items).encode("utf-8")).hexdigest()[:16]
+
+
+def write_lua_hashes(cars_dir, entries):
+    """Leave {car id: [fingerprint, hash]} next to the in-game app (car_hashes.json), so it doesn't have to read and hash
+    car files while you play. Cars missing from entries keep their old line. Does nothing if the app isn't installed.
+    """
+    app = Path(cars_dir).parent.parent / "apps" / "lua" / "ac_bench"
+    if not app.is_dir() or not entries:
+        return
+    f = app / "car_hashes.json"
+    try:
+        old = json.loads(f.read_text(encoding="utf-8")).get("cars", {})
+        if not isinstance(old, dict):
+            old = {}
+    except (OSError, ValueError, AttributeError):
+        old = {}
+    cars = dict(old)
+    cars.update(entries)
+    text = json.dumps({"v": 1, "cars": cars}, separators=(",", ":"))
+    try:
+        if f.is_file() and f.read_text(encoding="utf-8") == text:
+            return
+        f.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def local_hashes(cars_dir, ids, progress=None, cancel=None):
     """{folder id: physics hash} for the cars that have one. Uses and updates the on-disk cache."""
     try:
@@ -54,7 +104,7 @@ def local_hashes(cars_dir, ids, progress=None, cancel=None):
             cache = {}
     except (OSError, ValueError):
         cache = {}
-    base, result, dirty = Path(cars_dir), {}, False
+    base, result, dirty, seed = Path(cars_dir), {}, False, {}
     for n, cid in enumerate(ids, 1):
         if cancel and cancel():
             raise LiveUnavailable("cancelled")
@@ -63,12 +113,18 @@ def local_hashes(cars_dir, ids, progress=None, cancel=None):
         e = cache.get(cid)
         if isinstance(e, dict) and e.get("sig") == sig:
             h = e.get("hash")
+            if h and not e.get("fp"):
+                e["fp"] = _fingerprint(d)
+                dirty = True
         else:
             h = ac_carid.car_hash(d)
-            cache[cid] = {"sig": sig, "hash": h}
+            cache[cid] = e = {"sig": sig, "hash": h}
+            if h:
+                e["fp"] = _fingerprint(d)
             dirty = True
         if h:
             result[cid] = h
+            seed[cid] = [e["fp"], h]
         if progress and n % 25 == 0:
             progress(n, len(ids))
     stale = [k for k in cache if k not in set(ids)]
@@ -80,6 +136,7 @@ def local_hashes(cars_dir, ids, progress=None, cancel=None):
             HASH_CACHE.write_text(json.dumps(cache), encoding="utf-8")
         except OSError:
             pass
+    write_lua_hashes(cars_dir, seed)
     return result
 
 

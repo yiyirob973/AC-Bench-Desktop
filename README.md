@@ -172,19 +172,32 @@ Nothing is downloaded in bulk and no ratings file is written. `ui_car.json` is b
 
 ### Tags from inside the game
 
-The Lua app can do the same thing on its own. A short while after a race loads it identifies your installed cars, asks
-the server about just those and writes the same `#Pride-<class>` tags, using the same backup rule.
+The Lua app can do the same thing on its own. As soon as a race has loaded and it's clear it's an offline one, it
+identifies your installed cars, asks the server about just those and writes the same `#Pride-<class>` tags, using the
+same backup rule. It doesn't wait.
 
 - It never runs in online races, or in benchmark races.
-- It's built not to be felt. Every frame it gets a small time budget (about 2 ms while you're stopped, 0.5 ms while
+- Reading and hashing car files is the slow part, so the desktop app does that outside the game. Whenever it hashes
+  your cars (when the Server cars list loads and when you apply tags) it leaves the result in `car_hashes.json` in
+  the Lua app's folder. The in-game app compares each car's file names and sizes with that list, and a car that matches is
+  identified without opening any file. Only cars the list doesn't cover, like a mod you just installed, are hashed in the
+  game. The desktop app doesn't have to be running: the list is just a file, and the in-game app never waits for it. If a car's
+  files change while the desktop app is closed, the in-game app notices (the names, sizes or dates differ) and hashes
+  that car itself. Open the Server cars list once after installing a lot of cars so the list is ready.
+- It's built not to be felt. Every frame it gets a small time budget (about 3 ms while you're stopped, 0.5 ms while
   you're moving) and stops as soon as it's used up. Reading and hashing a big file can't be split up, so that happens one
   file at a time with a pause afterwards that is several times as long as the file took. While you're moving it only
   touches small files, and cars with bigger ones wait until you stop. A car with a very large file (over about 768 KB)
   is skipped and counted in the in-game window; **Apply server classes as tags** in the desktop app takes care of those.
   It backs off for a few seconds when a frame takes very long and does nothing while the frame rate is below about 45 fps.
-- It waits 45 seconds after the race loads before it starts. The first run over a big collection takes a few minutes
-  because every car has to be hashed. After that, only cars that changed are hashed again.
-- After a check it doesn't run again for 6 hours. **Check now** in the in-game window runs it right away.
+- To keep repeat checks cheap, it remembers which class it wrote into each `ui_car.json`. It always asks the server for
+  every car first. A car is only left alone when the server's class is the same as the one it wrote last time and the file
+  hasn't been touched since. If the class changed, or the file was edited, the tag is written again.
+- When a check ends it writes how long each kind of step took to the CSP log (`Documents/Assetto Corsa/logs/custom_shaders_patch.log`,
+  lines that contain `class_sync: profile`), and the in-game window shows the slowest step. If it still stutters,
+  those lines show where the time went.
+- It runs on every offline race, so a class that changed on the server is picked up the next time you start a race.
+  **Check now** in the in-game window runs it again without leaving the race.
 - It's off by default. Tick **Let the in-game app update car class tags by itself** on the Setup tab to turn it on.
   The setting reaches the Lua app through `config.json`, which the app writes when you change the checkbox or the
   server address and when you press *Install / update required files* (the Lua app has to be installed first). With it

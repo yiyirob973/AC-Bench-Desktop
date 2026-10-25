@@ -18,6 +18,11 @@
 --      original is kept as ui_car.json.gridbak, so the desktop app's Restore still works.
 -- ac_bench.lua only calls update() outside benchmark races, and gate() below also skips online races.
 --
+-- It starts as soon as the race has loaded and can tell it's an offline one (no waiting). The slow part of the job is
+-- reading and hashing car files, so the desktop app does that outside the game and leaves the result in
+-- car_hashes.json next to this file (ac_live.py). A car whose file names and sizes match that list is identified
+-- without opening a single file here. Only cars the list doesn't cover (new or changed mods) are hashed in the game.
+--
 -- It has to stay invisible while you play, so it works in tiny pieces:
 --   * every frame it gets a time budget (about 2 ms while the car is stopped, 0.5 ms while it's moving) and stops as
 --     soon as the budget is used up, so a frame is never held up by more than that;
@@ -32,12 +37,11 @@
 local M = {}
 
 local PREFIX_MIN = 3
-local START_DELAY = 45              -- seconds after the race loads before the first check
-local BUDGET_STOPPED = 0.002        -- seconds of work per frame while the car is stopped
+local BUDGET_STOPPED = 0.003        -- seconds of work per frame while the car is stopped
 local BUDGET_DRIVING = 0.0005       -- ... and while it's moving
-local UNITS_STOPPED = 8             -- most small steps per frame, whatever the clock says
+local UNITS_STOPPED = 12            -- most small steps per frame, whatever the clock says
 local UNITS_DRIVING = 2
-local HEAVY_GAP_STOPPED = 0.15      -- seconds to wait after reading and hashing a big file (at least; see runBudget)
+local HEAVY_GAP_STOPPED = 0.06      -- seconds to wait after reading and hashing a big file (at least; see runBudget)
 local HEAVY_GAP_DRIVING = 0.6
 local SMALL_FILE = 24 * 1024        -- files up to this size count as cheap steps
 local FILE_MAX_DRIVING = 96 * 1024  -- while driving, a car with a file bigger than this waits until you stop
@@ -47,24 +51,37 @@ local SLOW_FRAME = 0.022            -- no steps while the smoothed frame time is
 local SPIKE = 0.06                  -- a single frame this long makes the sync stand back for BACKOFF seconds
 local BACKOFF = 4
 local GATE_EVERY = 0.25             -- how often to look at the race and the car's speed
-local RECHECK_HOURS = 6             -- don't check again within this time (Check now ignores it)
 local BATCH = 250                   -- hashes per lookup request (a smaller answer is cheaper to read)
 local MOVING_KMH = 2                -- at or above this speed the car counts as moving
 local VERIFY_CARS = 3               -- the first few cars with a data folder are checked against the plain scan method
 
 local clock = os.preciseClock or os.clock   -- may be missing; then only the step counts above limit the work
 
+-- Timing of every kind of step, so it's clear what costs time. Written to the CSP log when a check ends
+-- (Documents/Assetto Corsa/logs/custom_shaders_patch.log, lines starting with "ac_bench/class_sync: profile").
+local prof = {}
+local function mark(name, t0, a, b)
+  if not (clock and t0) then return end
+  local d = clock() - t0
+  local e = prof[name]
+  if not e then e = { total = 0, n = 0, max = 0 } prof[name] = e end
+  e.total, e.n = e.total + d, e.n + 1
+  if d > e.max then e.max, e.a, e.b = d, a, b end
+end
+
 local dir
 local cfg = { server = '', include_provisional = false, auto = false, prefix = '#Pride-' }
-local state = { hashes = {}, table_version = nil, last_check = nil }   -- hashes[carId] = { sig = string, hash = hex }
+local state = { hashes = {}, applied = {}, table_version = nil, last_check = nil }   -- hashes[carId] = { sig = string, hash = hex }
 local st = {
   paused = false, phase = 'wait', note = 'starting', elapsed = 0, fdt = 0.016,
   now = 0, nextHeavy = 0, backoff = 0, gateAt = GATE_EVERY, gate = 'unknown', driving = false, manual = false,
   deferred = {}, incomplete = false, job = nil, scanNames = nil, si = 0,
   ids = {}, i = 0, hashOf = {}, batches = {}, b = 0, pending = false,
   labels = {}, todo = {}, t = 0,
-  n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0, big = 0 },
+  n = { cars = 0, hashed = 0, seeded = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0, big = 0 },
+  worst = {}, slowest = nil,
 }
+local seed = {}           -- seed[carId] = { fp = string, hash = hex }, from car_hashes.json (written by the desktop app)
 local legacyScan = false      -- set if the directory scan with attributes turns out not to work on this CSP
 local verified = 0
 
@@ -183,6 +200,17 @@ local function makeSig(parts)
     total = total + p.size
   end
   return table.concat(sig, '|'), total
+end
+
+-- A short fingerprint of a car's physics files by name and size only (the desktop app computes the same one).
+local function fingerprint(parts)
+  local strs = {}
+  for _, p in ipairs(parts) do
+    if not p.known then return nil end
+    strs[#strs + 1] = p.rel .. ':' .. string.format('%.0f', p.size)
+  end
+  table.sort(strs)
+  return sha256(table.concat(strs, '|')):sub(1, 16)
 end
 
 -- Lists a folder with sizes and dates in one call (the callback gets the attributes of every entry).
@@ -426,28 +454,50 @@ local function loadState()
   local ok, c = pcall(JSON.parse, s)
   if ok and type(c) == 'table' and type(c.hashes) == 'table' then
     state.hashes = c.hashes
+    if type(c.applied) == 'table' then state.applied = c.applied end
     state.table_version = c.table_version
     state.last_check = tonumber(c.last_check)
   end
 end
 
+-- car_hashes.json: { "v": 1, "cars": { "<car id>": [ "<fingerprint>", "<physics hash>" ] } }
+local function loadSeed()
+  seed = {}
+  local s = dir and readFile(dir .. '/car_hashes.json')
+  if not s then return end
+  local ok, c = pcall(JSON.parse, s)
+  if not ok or type(c) ~= 'table' or type(c.cars) ~= 'table' then return end
+  for id, e in pairs(c.cars) do
+    if type(e) == 'table' and type(e[1]) == 'string' and type(e[2]) == 'string' then seed[id] = { fp = e[1], hash = e[2] } end
+  end
+end
+
 local function saveState()
   if not dir then return end
+  local t0 = clock and clock()
   local parts = {}
   for id, e in pairs(state.hashes) do
     if type(e) == 'table' and e.hash then
       parts[#parts + 1] = string.format('%s:{"sig":%s,"hash":"%s"}', encodeString(id), encodeString(e.sig or ''), e.hash)
     end
   end
+  local applied = {}
+  for id, v in pairs(state.applied) do
+    if type(v) == 'string' then applied[#applied + 1] = encodeString(id) .. ':' .. encodeString(v) end
+  end
   writeFile(dir .. '/class_sync_state.json', '{"table_version":' .. tostring(tonumber(state.table_version) or 'null') ..
     ',"last_check":' .. tostring(tonumber(state.last_check) or 'null') ..
-    ',"hashes":{' .. table.concat(parts, ',') .. '}}')
+    ',"hashes":{' .. table.concat(parts, ',') .. '},"applied":{' .. table.concat(applied, ',') .. '}}')
+  mark('save state', t0)
 end
 
 -- ---------------------------------------------------------------- phases
+local reportProfile   -- defined below
+
 local function setPhase(p, note)
   st.phase = p
   st.paused = false
+  if p == 'done' and reportProfile then reportProfile() end
   if note then st.note = note end
 end
 
@@ -456,8 +506,28 @@ local function begin(manual)
   st.deferred, st.incomplete, st.job, st.scanNames, st.si = {}, false, nil, nil, 0
   st.labels, st.todo, st.t = {}, {}, 0
   st.manual = manual == true
-  st.n = { cars = 0, hashed = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0, big = 0 }
+  st.n = { cars = 0, hashed = 0, seeded = 0, known = 0, tagged = 0, same = 0, skipped = 0, errors = 0, big = 0 }
+  prof, st.worst, st.slowest = {}, {}, nil
+  local t0 = clock and clock()
+  loadSeed()
+  mark('load seed', t0)
   setPhase('scan', 'looking for installed cars')
+end
+
+reportProfile = function()
+  local names = {}
+  for name in pairs(prof) do names[#names + 1] = name end
+  table.sort(names, function(a, b) return prof[a].max > prof[b].max end)
+  for _, name in ipairs(names) do
+    local e = prof[name]
+    log(string.format('profile %-12s n=%-5d total=%6.0f ms  slowest=%5.1f ms  (%s %s)', name, e.n, e.total * 1000,
+      e.max * 1000, tostring(e.a or ''), tostring(e.b or '')))
+  end
+  for ph, d in pairs(st.worst) do log(string.format('profile worst frame while in %s: %.0f ms', ph, d * 1000)) end
+  local top = names[1]
+  if top and prof[top].max >= 0.004 then
+    st.slowest = string.format('slowest step: %s, %.0f ms', top, prof[top].max * 1000)
+  end
 end
 
 -- Every phase is a function that does one small step and says how it went:
@@ -511,9 +581,13 @@ end
 local function stepJob(job)
   local p = job.parts[job.k + 1]
   if not p then return 'done', sha256(table.concat(job.buf)) end
+  local t0 = clock and clock()
   local data = readFile(p.path)
+  mark('read file', t0, job.id .. '/' .. p.rel, p.size)
   if data == nil then return 'fail' end
+  local t1 = clock and clock()
   job.buf[#job.buf + 1] = p.rel .. '\0' .. sha256(data) .. '\n'
+  mark('sha256', t1, job.id .. '/' .. p.rel, p.size)
   job.k = job.k + 1
   return 'more'
 end
@@ -546,12 +620,26 @@ local function hashWork(driving, heavyOk)
     st.i = st.i + 1
     local id = st.ids[st.i]
     st.note = string.format('checking cars %d / %d', st.i, #st.ids)
-    local parts, sig, total = physicsInfo(M.carsDir .. '/' .. id)
+    local t0 = clock and clock()
+    local parts, sig = physicsInfo(M.carsDir .. '/' .. id)
+    mark('list files', t0, id, #parts)
     if #parts == 0 then return 'cheap' end
     local cached = state.hashes[id]
     if type(cached) == 'table' and cached.hash and (cached.sig == sig or sig == 'n/a') then
       st.hashOf[id] = cached.hash
       return 'cheap'
+    end
+    -- The desktop app's list is only trusted for a car this app hasn't seen before. If it has seen the car and its files
+    -- changed since (the date moved), the car is hashed again here, even if names and sizes still match the list.
+    local sd = not (type(cached) == 'table' and cached.hash) and seed[id] or nil
+    if sd then
+      local fp = fingerprint(parts)
+      if fp and fp == sd.fp then       -- the desktop app already hashed exactly these files
+        state.hashes[id] = { sig = sig, hash = sd.hash }
+        st.hashOf[id] = sd.hash
+        st.n.seeded = st.n.seeded + 1
+        return 'cheap'
+      end
     end
     local biggest = 0
     for _, p in ipairs(parts) do if p.size > biggest then biggest = p.size end end
@@ -606,7 +694,9 @@ local function lookupWork()
       st.pending = false
       local okBody, data = false, nil
       if not err and response and tonumber(response.status) == 200 then
+        local tp = clock and clock()
         okBody, data = pcall(JSON.parse, response.body)
+        mark('parse answer', tp, #(response.body or ''), '')
       end
       if not okBody or type(data) ~= 'table' then
         setPhase('done', 'server unreachable or returned an error (' .. tostring(err or (response and response.status)) .. ')')
@@ -625,6 +715,12 @@ local function lookupWork()
   return 'cheap'
 end
 
+local function stampOf(f)
+  local a = attrsOf(f)
+  if not a then return nil end
+  return string.format('%.0f', fileSizeOf(a)) .. ':' .. tostring(a.lastWriteTime)
+end
+
 local function applyWork(_, heavyOk)
   local job = st.todo[st.t + 1]
   if not job then
@@ -634,13 +730,33 @@ local function applyWork(_, heavyOk)
     log(st.note)
     return 'end'
   end
+  local f = M.carsDir .. '/' .. job.id .. '/ui/ui_car.json'
+  -- A car whose ui_car.json is still exactly as it was left after the last tagging doesn't need to be opened at all
+  local t0 = clock and clock()
+  local before = stampOf(f)
+  mark('stat ui json', t0, job.id, '')
+  -- This only skips the car if the server's class is the same as the one written last time AND the file hasn't been
+  -- touched since. A new class from the server, or any edit to the file, gives a different value and the car is redone.
+  local want = job.label .. '|' .. tostring(before)
+  if before and state.applied[job.id] == want then
+    st.t = st.t + 1
+    st.n.same = st.n.same + 1
+    st.note = string.format('writing tags %d / %d', st.t, #st.todo)
+    return 'cheap'
+  end
+  local t1 = clock and clock()
   local r = applyTag(job.id, job.label, heavyOk)
+  mark(r == 'changed' and 'write tag' or 'read ui json', t1, job.id, '')
   if r == 'defer' then return 'idle' end
   st.t = st.t + 1
   if r == 'changed' then st.n.tagged = st.n.tagged + 1
   elseif r == 'same' then st.n.same = st.n.same + 1
   elseif r == 'error' then st.n.errors = st.n.errors + 1
   else st.n.skipped = st.n.skipped + 1 end
+  if r == 'changed' or r == 'same' then
+    local after = stampOf(f)
+    if after then state.applied[job.id] = job.label .. '|' .. after end
+  end
   st.note = string.format('writing tags %d / %d', st.t, #st.todo)
   return r == 'changed' and 'heavy' or 'cheap'
 end
@@ -677,8 +793,6 @@ function M.init()
     setPhase('off', 'no server address, open the desktop app once so it can write config.json')
   elseif not cfg.auto then
     setPhase('off', 'automatic tagging is off (use Check now)')
-  elseif os.time and state.last_check and math.abs(os.time() - state.last_check) < RECHECK_HOURS * 3600 then
-    setPhase('done', 'checked recently, use Check now to run it again')
   end
 end
 
@@ -711,12 +825,9 @@ function M.update(dt)
     if st.now > 2 then setPhase('off', 'can\'t tell if this is an offline race, so doing nothing') end
     return
   end
-  if p == 'wait' then
-    st.elapsed = st.elapsed + dt
-    st.note = string.format('first check in %ds', math.max(0, math.ceil(START_DELAY - st.elapsed)))
-    if st.elapsed >= START_DELAY then begin(false) end
-    return
-  end
+  if p == 'wait' then begin(false) return end         -- no waiting: start as soon as it's known to be an offline race
+  local w = st.worst[p]
+  if not w or dt > w then st.worst[p] = dt end
   if dt > SPIKE then st.backoff = st.now + BACKOFF end
   if st.now < st.backoff or st.fdt > SLOW_FRAME then
     st.paused = true
@@ -735,6 +846,8 @@ function M.ui()
   if st.phase == 'done' or st.phase == 'apply' then
     ui.text(string.format('%d cars, %d known to the server, %d tagged, %d already right, %d problems',
       st.n.cars, st.n.known, st.n.tagged, st.n.same, st.n.errors))
+    ui.text(string.format('%d cars identified from the desktop app\'s list, %d hashed here', st.n.seeded, st.n.hashed))
+    if st.slowest then ui.text(st.slowest) end
     if st.n.big > 0 then
       ui.text(string.format('%d big cars skipped, the desktop app tags those', st.n.big))
     end
