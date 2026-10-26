@@ -1,199 +1,218 @@
-# AC Bench Desktop
+<p align="center">
+  <img src="branding/ac-bench.png" alt="AC Bench logo" width="140">
+</p>
 
-The desktop app for benchmarking Assetto Corsa car mods against a fixed baseline. It has a Windows GUI, the benchmark
-runner, an in-game Lua logger and the local result handling.
+<h1 align="center">AC Bench Desktop</h1>
+
+<p align="center">
+  Benchmark your Assetto Corsa cars and see how they stack up against everyone else's.
+</p>
+
+---
+
+AC Bench measures how fast AI drivers lap each of your installed cars under fixed conditions, uploads the times to an
+[AC Bench server](https://github.com/yiyirob973/AC-Bench-Server) and gets back a performance class for every car. You can
+write those classes into your car list as tags, so you can build balanced grids from a big collection of mods.
+
+This is the Windows desktop app: the GUI, the benchmark runner, and a small in-game app for Assetto Corsa.
+
+## Public server
+
+The public server is **https://bench.cauch.uk**. Enter it as the server address on the Setup tab. Anyone can run their
+own server instead, see [Running a server](#running-a-server).
 
 ## How it works
 
 Every car is benchmarked under the same conditions, and the server decides what they are: the tracks, the number of
-laps, the AI settings, the weather and the rest. The app fetches them from the server before every benchmark, vanilla
-check and upload, and none of it can be changed here. A car's score on a track comes from the median of its timed laps
-(lap 1 is a standing start and is dropped).
+laps, the AI settings, the weather and the rest. The app fetches them from the server and none of it can be changed
+here. A car's score on a track comes from the median of its timed laps, and the first lap is dropped because it's a
+standing start.
 
-Because everything is fixed by the server, times from different cars and different PCs can be compared directly.
+Because everything is fixed by the server, times from different cars and different PCs can be compared directly. The
+desktop app only measures lap times. The server recomputes the scores from everyone's uploads and decides each car's class.
 
-## What's in here
+## Requirements
 
-- `ac_bench_gui.py`: the GUI, for benchmarking, uploading and tagging
-- `ac_lap_bench.py`, `ac_baseline.py`: build and run the fixed-baseline races
-- `ac_carid.py`, `ac_car_classifier.py`, `ac_rating.py`: identify cars by physics hash, read car data, rate results
-- `ac_track_check.py`: checks the vanilla tracks and `acs.exe`
-- `ac_cloud.py`, `ac_live.py`: talk to the server (upload, live car lookups)
-- `apps/lua/ac_bench/`: the in-game Lua app. It logs AI lap times during benchmark races. Otherwise it keeps the
-  `#Pride-<class>` car tags up to date (`class_sync.lua`, set up by the `config.json` the app writes during
-  *Install required files*).
-- `bundled_car/`: the TV Car by EmilioGQ (https://www.overtake.gg/downloads/tv-car.45108/), which every run drives so
-  results stay consistent between installs. It's never benchmarked itself, in any mode, and is never listed or tagged.
+- Windows and Assetto Corsa (Steam) with [Custom Shaders Patch](https://acstuff.club/patch/) installed
+- A server address and an invite code to register with it
+- Python 3, only if you run the app from source
 
-## Quick start
+## Getting started
 
-On Windows run `run_gui.bat`, or from Python:
+Download `AC-Bench.exe` from the [Releases page](../../releases) and run it. Nothing needs installing. To run from
+source instead, start `run_gui.bat`, or run `python ac_bench_gui.py`. The app only uses Python's standard library.
 
-```bash
-python ac_bench_gui.py
-```
+Then go through the tabs in order: set up the folders and register, run the vanilla check, run a benchmark, and look at
+the results.
 
-## Workflow
+## The tabs
 
-The tabs go in the order you use them:
+The bar along the bottom is always there: **Stop**, a progress bar, the current state, the server's conditions and
+**Show log**.
 
-1. **Setup**: Assetto Corsa folders, *Install / update required files* (the benchmark car and the Lua logger; a
-   checklist shows what's missing and what to do next), server address, name, invite code, Register.
-2. **Vanilla check**: compare the benchmark tracks and `acs.exe` with the server's environment.
-3. **Benchmark**: the server's conditions (read-only), pick cars, start. Each pack's times are uploaded when its cars
-   finish. *Upload my results* is the backup.
-4. **Cars & ratings**: your local ratings and the live server classes, **Apply server classes as tags**, and
-   **Benchmark cars missing from server** (installed cars the server has no class for yet).
+### 1. Setup
 
-The app opens on step 2 when setup is complete, and on step 1 otherwise.
+<p align="center">
+  <img src="docs/screenshots/setup.png" alt="The Setup tab" width="760">
+</p>
 
-## The server
+- **Assetto Corsa folders:** the game folder and your Documents/Assetto Corsa folder.
+- **Required files:** the benchmark car and the in-game app. *Install / update required files* copies both into
+  Assetto Corsa. This also happens automatically before every benchmark.
+- **Server:** the server address, your name and an invite code, then **Register**. You can also
+  [use the same account on another device](#same-account-on-another-device).
+- **In-game app options:** whether it may [update car class tags by itself](#tags-from-inside-the-game).
 
-Results go to the [AC Bench Server](https://github.com/yiyirob973/AC-Bench-Server), which validates them, combines data
-from several users and publishes versioned class tables. The repository has the server setup and backend docs.
+### 2. Vanilla check
 
-The desktop app only measures lap times. It never works out a class itself. **Local cars** shows the times measured on
-this PC. After an upload (automatic after each pack, or with the backup button) the server recomputes the scores,
-classifies the cars and replies with the class of every car you just uploaded. That reply is printed in the log and then
-shows up in **Server cars**.
+<p align="center">
+  <img src="docs/screenshots/vanilla-check.png" alt="The Vanilla check tab" width="760">
+</p>
 
-## Server cars
+Compares the benchmark tracks and `acs.exe` with the server's environment. Benchmarks run this check first and stop if
+anything differs, so everyone's times come from the same unmodified tracks. The server only keeps fingerprints, so it
+can't tell you which file is different. If the check fails, verify the game files in Steam and remove any extra files
+from the track folders.
 
-The Server cars list is read live. Your installed cars are hashed by their physics files (cached in
-`car_hash_cache.json`, only changed cars get re-hashed) and just those hashes are sent to `POST /v1/cars/lookup`. It
-refreshes when the Cars tab opens (if the data is over a minute old), at start, and with **Refresh**. The ratings are
-only kept in memory. This needs a server that has the lookup endpoint.
+### 3. Benchmark
+
+<p align="center">
+  <img src="docs/screenshots/benchmark.png" alt="The Benchmark tab" width="760">
+</p>
+
+- **Conditions:** what the server has set. They're read-only here.
+- **Which cars:** filters for what to run, and what to do with cars that already have results.
+- **Run options:** *Cars per pack*. A pack runs on every track before the next pack starts. One car per pack is the
+  cleanest because the cars don't share the track. Bigger packs are faster. The server sets the upper limit.
+- **Buttons:** start a benchmark, do a dry run that only counts the jobs, or probe specific cars.
+- **Uploading:** times go to the server as each pack finishes, if you're registered. See
+  [Uploading results](#uploading-results).
+
+### 4. Cars & ratings
+
+<p align="center">
+  <img src="docs/screenshots/cars-and-ratings.png" alt="The Cars & ratings tab" width="760">
+</p>
+
+Two lists. **Local cars** shows the lap times measured on this PC, with a status per car. **Server cars** shows the
+classes the server has given your installed cars. From here you can rerun selected cars (see
+[Rebenchmarking](#rebenchmarking)), apply the server's classes as tags and benchmark installed cars the server doesn't
+have a class for yet.
+
+## Car classes and tags
+
+Classes are `1A` (top class), `1B` ... `1Z`, then `2A` ... `2Z`, `3A` and so on. Tags look like `#Pride-1A`, so you can
+search for a class in Content Manager. Applying tags replaces an older `#Pride-` tag on a car and leaves your other tags
+alone. Each car's `ui_car.json` is backed up before it's changed.
 
 ### Applying tags
 
-**Apply server classes as tags** (or `python ac_live.py tag --server URL --cars-dir "<AC>/content/cars" --apply`) does
-its own lookup: it finds the cars installed on this PC, asks the server about only those and writes one `#Pride-<class>`
-tag into each car that has a verified class (provisional ones too, if enabled in Settings). The bundled car is skipped.
-Nothing is downloaded in bulk and no ratings file is written. `ui_car.json` is backed up first.
+**Apply server classes as tags** on the Cars & ratings tab finds the cars installed on this PC, asks the server about
+only those and writes a tag into each car that has a verified class. Provisional classes are included if you enable that
+in Settings. The bundled car is skipped.
 
 ### Tags from inside the game
 
-The Lua app can do the same thing on its own. A short while after a race loads it identifies your installed cars, asks
-the server about just those and writes the same `#Pride-<class>` tags, using the same backup rule.
+The in-game app can do the same thing on its own, so your tags stay current without opening the desktop app. It's off
+by default. Turn it on with the option on the Setup tab.
 
-- It never runs in online races, or in benchmark races.
-- It works while you drive too, in small steps: one car hashed or one tag written every 0.75 seconds (every 0.25
-  seconds when you're stopped). While the car is moving it only hashes cars with a small amount of physics data (under
-  about 600 KB), so no step takes more than a couple of milliseconds. Bigger cars wait for a later check or until you're
-  stopped, and it does nothing while the frame rate is below about 40 fps.
-- It waits 45 seconds after the race loads before it starts. The first run over a big collection takes a few minutes
-  because every car has to be hashed. After that, only cars that changed are hashed again.
-- After a check it doesn't run again for 6 hours. **Check now** in the in-game window runs it right away.
-- It's off by default. Tick **Let the in-game app update car class tags by itself** on the Setup tab to turn it on.
-  The setting reaches the Lua app through `config.json`, which the app writes when you change the checkbox or the
-  server address and when you press *Install / update required files* (the Lua app has to be installed first). With it
-  off, **Check now** in the in-game window still runs a check by hand.
-- It needs a CSP version that has `ac.checksumSHA256`. If it's missing, the in-game window says so.
+- It only runs in offline races, never in online races or benchmark races. It starts as soon as a race has loaded, asks
+  the server about your installed cars and writes the tags. A class that changed on the server is picked up the next
+  time you start a race. **Check now** in the in-game window runs it again without leaving the race.
+- The desktop app doesn't need to be running. It's designed to stay out of the way of your frame rate, and cars with very
+  large physics files are left for the desktop app's **Apply server classes as tags**. The in-game window shows how
+  many were skipped.
+- It needs a Custom Shaders Patch version that provides `ac.checksumSHA256`. If it's missing, the in-game window says so.
+- If you see stutter while it runs, the Custom Shaders Patch log (`Documents/Assetto Corsa/logs/custom_shaders_patch.log`)
+  has lines containing `class_sync: profile` that show where the time went. Include them in a bug report.
 
-## Class labels
+## The in-game app
 
-Classes are `1A` (top class), `1B` ... `1Z`, then `2A` ... `2Z`, `3A` and so on. Two-letter codes like `AA` aren't used
-any more because searching for class "A" matched cars in other classes. Tags look like `#Pride-1A`, `#Pride-1B`, and
-applying tags replaces any older `#Pride-` tag (for example `#Pride-A`). The server renames the classes in tables it
-already published, so there's nothing to migrate.
+The in-game app shows up in Assetto Corsa's app bar as **AC Bench**. During a benchmark race it logs the AI lap times
+for the desktop app. The rest of the time it does nothing, apart from the class tags above if you turned them on.
 
-## How each race is started
+<p align="center">
+  <img src="docs/screenshots/in-game-idle.png" alt="The in-game window while checking cars" width="380">
+  &nbsp;
+  <img src="docs/screenshots/in-game-tags.png" alt="The in-game window while writing tags" width="380">
+</p>
 
-Every race is started with AC's own **Start race** hotkey. There's no other way to start one (no clicking, no
-calibration). It's the same command as Content Manager > Settings > Assetto Corsa > Controls > System > Race > *Start
-race*, stored in `Documents\Assetto Corsa\cfg\controls.ini` as `[__CM_START_SESSION]` with `KEY=0x7B ; F12`. Content
-Manager writes the key as hex plus its name, and the app reads both hex and plain numbers. The hotkey is Ctrl + that key.
+## Starting races
 
-- A key you already set is always used and never changed (the log mentions it if AC uses that Ctrl+key for something
-  else). F12 is only written when nothing is set. Duplicate `KEY` lines get cleaned up. Only that section is touched, a
-  backup is kept (`controls.ini.acbench.bak`), and a dry run never touches the file.
-- Custom Shaders Patch handles the hotkey in the game when `extension\config\data_hotkeys_supported.txt` lists
-  `__CM_START_SESSION`, so Content Manager doesn't need to be running. The log says which case your install is.
-- Under Setup > *Starting each race*, **Set up start hotkey** prints what controls.ini contains and **Test start hotkey**
-  presses it once (open AC on the pre-race screen first). *First try after launching AC* is the delay before the first
-  press. After that the app presses it every few seconds until the logger reports that the race has started. Restart AC
-  after the key changes.
+Every race is started with Assetto Corsa's own **Start race** hotkey (the one in Content Manager > Settings > Assetto
+Corsa > Controls > System > Race). A key you've already set is always used and never changed. If none is set, the app
+sets one. It never clicks anything. The Setup tab has buttons to check and test the hotkey. Custom Shaders Patch handles
+the hotkey in the game, so Content Manager doesn't need to be running.
 
 ## Uploading results
 
-By default a pack's times are uploaded as soon as its cars have run on every track (a pack is one car when *Cars per
-pack* is 1). The server recomputes the scores and replies with each car's class, which is printed in the log. If an
-upload fails (offline, rate limit, not registered) the benchmark carries on and the times stay saved. **Upload my
-results (backup)** on the Benchmark tab sends everything that hasn't been uploaded yet. Untick *Upload each pack's times
-automatically* to upload only with the button. Uploaded results are remembered, so nothing gets sent twice.
-
-Job processes (benchmark, upload and so on) always write UTF-8, so car names with special characters don't crash an
-upload or turn into garbage in the log.
+By default a pack's times are uploaded as soon as its cars have run on every track. The server recomputes the scores and
+replies with each car's class, which is printed in the log and shows up in **Server cars**. If an upload fails (offline,
+rate limit, not registered) the benchmark carries on and the times stay saved. The backup upload button on the Benchmark
+tab sends everything that hasn't been uploaded yet. Uploaded results are remembered, so nothing gets sent twice.
 
 ## Rebenchmarking
 
-**Benchmark selected cars** redoes the cars you picked, but only on the tracks where they have no valid time yet. A car
-that has a time on one track and a failure on the other only reruns the failed one. **Redo all tracks for selected**
-does every track. On the command line that's `--probe` (add `--all-tracks` for everything). The *Rerun* options still
-redo every track of the cars they apply to.
+**Benchmark selected cars** redoes the cars you picked, but only on the tracks where they have no valid time yet. **Redo
+all tracks for selected** does every track.
 
 ## Same account on another device
 
-On the device that's already registered: Setup > **Create link code for another device** (or `python ac_cloud.py link`).
-On the new device: Setup > **Use the same account on another device**, enter the code and press **Sign in** (or
-`python ac_cloud.py login --code=XXXX-XXXX-XXXX`). The code works once and expires after a few minutes. Each device gets its own key
-for the same account, saved in its own `cloud_config.json`.
+On the device that's already registered, create a link code on the Setup tab. On the new device, choose the option to
+use the same account, enter the code and sign in. The code works once and expires after a few minutes. Each device gets
+its own key for the same account.
 
-## Creating the track reference (server operator)
+## Running a server
 
-The server's reference environment is a digest of every benchmark track folder plus the SHA-256 of `acs.exe`. Make it
-from a clean install: Steam > Verify integrity of game files, with no extra files in the track folders.
+Results go to an [AC Bench Server](https://github.com/yiyirob973/AC-Bench-Server), which validates them, combines data
+from several users and publishes versioned class tables. That repository has the setup instructions, including how to
+create and load the track reference that the vanilla check compares against. The Vanilla check tab has a button to create
+the reference from a clean install.
 
-- GUI: **Vanilla check** tab > **Create track reference (server operator)**, or
-- CLI: `python ac_track_check.py create --ac-dir "<AC>" --out track_reference.json`
+## Building the exe
 
-The track list and profile come from the server's `/v1/conditions`, so no environment is needed yet. Load the file on the
-server with `python server.py set-env --from track_reference.json`. Players then verify against it.
+`.github/workflows/build.yml` builds `AC-Bench.exe` with [Nuitka](https://nuitka.net/), which compiles the code to a
+native program. The exe contains everything the app installs into Assetto Corsa. Settings, results and logs are written
+next to the exe, or to `%LOCALAPPDATA%\AC-Bench` if that folder isn't writable.
 
-## Portable exe
-
-The GitHub workflow `.github/workflows/build.yml` builds `AC-Bench.exe` with **Nuitka**, which compiles the code to a
-native program (PyInstaller exes get flagged by antivirus products far more often). It needs `template_race.ini` in the
-repo and embeds it together with `bundled_car/` and `apps/lua/ac_bench/`.
-
-- By default it builds one file. Every push to `dev` publishes it to the rolling `dev-latest` GitHub Release (direct
-  download, with a `.sha256`). The Actions artifact holds the same file, wrapped in a zip because GitHub always does that.
-  Start the workflow by hand with **folder** ticked to get a folder build instead (for debugging).
-- **Embedded, read-only:** the race template, the benchmark car and the Lua logger are read from inside the exe.
-  *Install / update required files* on the Setup tab, and the automatic install before each benchmark, copy them from
-  there into Assetto Corsa.
-- **Written next to the exe:** settings, `lap_results.json`, `cloud_config.json`, caches and logs. Copy the folder and
-  everything comes along. If that folder isn't writable (Program Files, say) the app uses `%LOCALAPPDATA%\AC-Bench`
-  instead. Nothing is written to the temporary unpack folder, which is deleted when the app closes.
-- **Jobs:** the exe has no separate script files, so the app starts itself with `--ac-run <module>` to run the
-  benchmark, upload, vanilla check and tagging as child processes (same window, output in the log).
-- **From source** everything works the same (`run_gui.bat` or `python ac_bench_gui.py`). `ac_paths.py` is the one place
-  that decides where files live.
-- Every build checks the finished program (`--ac-selfcheck`: embedded template, car and Lua logger present, all modules
-  importable) and starts a job through `--ac-run` before the artifact is uploaded.
-
-Nuitka cuts the chance of a false positive a lot but can't remove it. A new, unsigned program that few people have
-downloaded has no reputation yet. Signing it with a code-signing certificate is what fixes that for good.
+**Antivirus warnings:** a new, unsigned program that few people have downloaded has no reputation yet, so some antivirus
+products flag it. Building with Nuitka cuts the chance a lot but can't remove it. If you'd rather not run the exe, run
+the app from source.
 
 ## Repository layout
 
 ```text
 AC-Bench-Desktop/
   README.md
-  run_gui.bat
-  ac_bench_gui.py
-  ac_baseline.py
-  ac_carid.py
-  ac_car_classifier.py
-  ac_cloud.py
-  ac_live.py
-  ac_input.py
-  ac_lap_bench.py
-  ac_rating.py
-  ac_tag_writer.py
-  ac_track_check.py
-  apps/lua/ac_bench/
-    ac_bench.lua
-    class_sync.lua
+  run_gui.bat                  start the GUI from source on Windows
+  ac_bench_gui.py              the GUI
+  ac_lap_bench.py              builds and runs the benchmark races
+  ac_baseline.py               the fixed baseline
+  ac_conditions.py             benchmark conditions from the server
+  ac_carid.py                  identifies cars by physics hash
+  ac_car_classifier.py         reads car data
+  ac_rating.py                 scores results
+  ac_track_check.py            vanilla check of the tracks and acs.exe
+  ac_cloud.py                  server API: register, upload, link devices
+  ac_live.py                   live car lookups and tag writing
+  ac_tag_writer.py             writes the class tags
+  ac_input.py, ac_controls.py  the race start hotkey
+  ac_paths.py                  where files live
+  ac_theme.py                  window icon and logo
+  branding/
+    ac-bench.ico               exe and window icon
+    ac-bench.png               logo
+    header.png                 small logo for the window header
+  docs/screenshots/            the screenshots in this README
+  bundled_car/                 the TV car every race drives
+  apps/lua/ac_bench/           the in-game app
+    ac_bench.lua               lap logger
+    class_sync.lua             in-game class tagging
     manifest.ini
+    icon.png                   app bar icon
 ```
+
+## Credits
+
+The bundled TV car is by EmilioGQ: <https://www.overtake.gg/downloads/tv-car.45108/>. Every run drives it so results stay
+consistent between installs. It's never benchmarked itself and is never listed or tagged.

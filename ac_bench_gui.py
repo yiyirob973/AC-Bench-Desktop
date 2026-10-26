@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """GUI for the AC benchmark tools. Keep this file in the same folder as ac_lap_bench.py, ac_conditions.py, ac_baseline.py,
-ac_track_check.py, ac_cloud.py, ac_car_classifier.py and ac_tag_writer.py, plus template_race.ini (the race.ini the
+ac_track_check.py, ac_cloud.py, ac_car_classifier.py, ac_tag_writer.py and ac_theme.py, plus template_race.ini (the race.ini the
 benchmark races are built from), a bundled_car/<car id>/ folder (the car the benchmark drives) and apps/lua/ac_bench/
-(the in-game lap logger). The car and the logger are installed into Assetto Corsa automatically before each benchmark.
+(the in-game lap logger) and branding/ (the logo files). The car and the logger are installed into Assetto Corsa automatically before each benchmark.
 Results (lap_results.json) are saved in that folder and settings in ac_bench_gui.json.
 
 Tabs, in the order you use them:
@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 import ac_paths  # noqa: E402  (the script's own folder is already first on sys.path when run as a script)
+import ac_theme  # noqa: E402  (colors and logo)
 
 HERE = ac_paths.DATA        # everything the app writes and keeps: settings, results, caches (next to the exe)
 RES = ac_paths.RES          # everything shipped inside the app: race template, benchmark car, Lua logger
@@ -392,6 +393,7 @@ def main():
 
     root = tk.Tk()
     root.title("AC Bench")
+    icon_refs = ac_theme.set_window_icon(root)     # kept in a variable so Tk doesn't lose the images
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     ww, wh = min(1060, sw - 80), min(780, sh - 120)
     root.geometry(f"{ww}x{wh}+{max(0, (sw - ww) // 2)}+{max(0, (sh - wh) // 3)}")
@@ -399,10 +401,7 @@ def main():
 
     # ---- look and feel ----
     style = ttk.Style(root)
-    try:
-        style.theme_use("vista" if os.name == "nt" else "clam")
-    except tk.TclError:
-        pass
+    ac_theme.use_theme(root, style)
     for fname in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
         try:
             tkfont.nametofont(fname).configure(size=10)
@@ -415,9 +414,7 @@ def main():
     style.configure("TButton", padding=(8, 4))
     style.configure("Accent.TButton", font=bold, padding=(12, 5))
     style.configure("TNotebook.Tab", padding=(14, 6))
-    style.configure("Muted.TLabel", foreground="#6e7781")
-    style.configure("Bold.TLabel", font=bold)
-    style.configure("TLabelframe.Label", font=bold)
+    ac_theme.apply(root, style, bold)
 
     def fixed_map(option):  # workaround: Tk 8.6.9 ignores Treeview row tag colours without this
         return [e for e in style.map("Treeview", query_opt=option) if e[:2] != ("!disabled", "!selected")]
@@ -679,7 +676,7 @@ def main():
         the notebook and build the page inside `inner`.
         """
         outer = ttk.Frame(parent)
-        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0, background=ac_theme.BG)
         vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas, padding=padding)
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
@@ -1026,11 +1023,11 @@ def main():
         tree = ttk.Treeview(fr, columns=cols, show="headings", height=11, selectmode="extended")
         for k, w in zip(cols, widths):
             tree.column(k, width=w, anchor="w" if k in left else ("center" if k == "cls" else "e"))
-        tree.tag_configure("odd", background="#f6f8fa")
-        tree.tag_configure("ok", foreground="#1a7f37")
-        tree.tag_configure("warn", foreground="#9a6700")
-        tree.tag_configure("bad", foreground="#cf222e")
-        tree.tag_configure("dim", foreground="#6e7781")
+        tree.tag_configure("odd", background=ac_theme.ROW_ALT)
+        tree.tag_configure("ok", foreground=ac_theme.OK)
+        tree.tag_configure("warn", foreground=ac_theme.WARN)
+        tree.tag_configure("bad", foreground=ac_theme.ERROR)
+        tree.tag_configure("dim", foreground=ac_theme.TEXT_MUTED)
         sbar = ttk.Scrollbar(fr, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sbar.set)
         tree.grid(row=1, column=0, sticky="nsew")
@@ -1380,6 +1377,14 @@ def main():
     # ======== bottom bar ========
     bar = ttk.Frame(root, padding=(10, 4))
     bar.pack(side="bottom", fill="x")
+    header = tk.Frame(root, background=ac_theme.BG)
+    header.pack(side="top", fill="x")
+    logo_img = ac_theme.header_logo()
+    if logo_img is not None:
+        ttk.Label(header, image=logo_img, style="Header.TLabel").pack(side="left", padx=(12, 8), pady=6)
+    ttk.Label(header, text="AC Bench", style="Header.TLabel",
+              font=("Segoe UI", 13, "bold")).pack(side="left", pady=6)
+    tk.Frame(root, height=1, background=ac_theme.BORDER).pack(side="top", fill="x")
     nb.pack(fill="both", expand=True, padx=10, pady=(10, 6))
 
     log_btn = ttk.Button(bar, text="Show log", command=toggle_log)
@@ -1484,10 +1489,12 @@ def selfcheck():
     cars = [p for p in BUNDLED_CAR_DIR.iterdir() if p.is_dir()] if BUNDLED_CAR_DIR.is_dir() else []
     check(len(cars) == 1 and ((cars[0] / "data").exists() or (cars[0] / "data.acd").exists()),
           f"embedded benchmark car: {[p.name for p in cars]}")
+    for f in (ac_theme.ICON_ICO, ac_theme.ICON_PNG, ac_theme.HEADER_PNG):
+        check(f.is_file(), f"embedded logo file: {f.name}")
     lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
-    check("ac_bench.lua" in lua and "manifest.ini" in lua, f"embedded Lua logger: {lua}")
+    check("ac_bench.lua" in lua and "manifest.ini" in lua and "icon.png" in lua, f"embedded Lua logger: {lua}")
     for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
-                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "tkinter"):
+                "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_theme", "tkinter"):
         try:
             importlib.import_module(mod)
             ok = True
