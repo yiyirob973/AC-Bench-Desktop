@@ -17,7 +17,7 @@ on:
         default: false
 
 permissions:
-  contents: write      # lets the job publish the exe to the dev-latest release
+  contents: read       # the build job can't write to the repository; only the publish job below can
 
 jobs:
   build:
@@ -78,7 +78,7 @@ jobs:
           --include-data-dir=bundled_car=bundled_car `
           --include-data-dir=branding=branding `
           --include-data-dir=apps=apps `
-          --include-module=ac_paths --include-module=ac_lap_bench --include-module=ac_cloud `
+          --include-module=ac_paths --include-module=ac_lap_bench --include-module=ac_cloud --include-module=ac_net `
           --include-module=ac_conditions --include-module=ac_live --include-module=ac_tag_writer `
           --include-module=ac_track_check --include-module=ac_baseline --include-module=ac_rating `
           --include-module=ac_carid --include-module=ac_car_classifier --include-module=ac_input --include-module=ac_controls --include-module=ac_theme `
@@ -151,21 +151,33 @@ jobs:
         }
         Get-ChildItem package
 
-    # a direct download of AC-Bench.exe (the newest dev build replaces the previous one)
-    - name: Publish to the dev-latest release
-      if: github.event_name == 'push'
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh release delete dev-latest --yes --cleanup-tag 2>$null
-        gh release create dev-latest (Get-ChildItem package).FullName --prerelease --target ${{ github.sha }} `
-          --title "Latest dev build" --notes "AC-Bench.exe built from commit ${{ github.sha }}. SHA-256 is in the .sha256 file."
-        if ($LASTEXITCODE -ne 0) { Write-Error "Publishing the release failed"; exit 1 }
-
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: AC-Bench-Portable
         path: package/*
         if-no-files-found: error
+
+  # Publishing is its own job: it runs no build tooling and the write permission exists only here.
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Download the build
+      uses: actions/download-artifact@v4
+      with:
+        name: AC-Bench-Portable
+        path: package
+
+    # a direct download of AC-Bench.exe (the newest dev build replaces the previous one)
+    - name: Publish to the dev-latest release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release delete dev-latest --yes --cleanup-tag || true
+        gh release create dev-latest package/* --prerelease --target "${{ github.sha }}" \
+          --title "Latest dev build" --notes "AC-Bench.exe built from commit ${{ github.sha }}. SHA-256 is in the .sha256 file."

@@ -17,6 +17,11 @@ import argparse, json, os, re, sys, tempfile
 from pathlib import Path
 
 BOM = b"\xef\xbb\xbf"
+LABEL = re.compile(r"[1-9][0-9]?[A-Z]")   # 1A .. 1Z, 2A .. 2Z, the only class names the server hands out
+
+
+def valid_label(label):
+    return isinstance(label, str) and len(label) <= 4 and LABEL.fullmatch(label) is not None
 
 
 def norm(tag):
@@ -97,6 +102,11 @@ def main(argv=None, labels=None):
         if len(x.strip()) < 3:
             sys.exit("A tag prefix is too short; it must be at least 3 characters so other tags are never removed.")
     labels = labels or {}
+    bad = sorted(k for k, v in labels.items() if not valid_label(v))
+    if bad:   # a class the server should never send: leave those cars alone
+        print("Ignoring %d car(s) whose class from the server is not in the expected form: %s"
+              % (len(bad), ", ".join(bad[:5]) + (" ..." if len(bad) > 5 else "")))
+        labels = {k: v for k, v in labels.items() if k not in bad}
     excl = re.compile(a.exclude) if a.exclude else None
 
     changed = same = skipped = 0
