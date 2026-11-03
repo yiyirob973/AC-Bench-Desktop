@@ -8,7 +8,7 @@ name: Build Portable Executable (Nuitka)
 # Start the workflow by hand with "folder" ticked to build a folder instead (only useful for debugging).
 on:
   push:
-    branches: [ dev ]
+    branches: [ hardened ]
   workflow_dispatch:
     inputs:
       folder:
