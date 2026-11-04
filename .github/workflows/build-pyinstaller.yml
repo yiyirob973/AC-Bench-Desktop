@@ -4,6 +4,9 @@ name: Build Portable Executable (PyInstaller, manual fallback)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest

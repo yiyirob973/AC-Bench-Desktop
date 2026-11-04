@@ -14,8 +14,9 @@ The server address is stored in cloud_config.json (shared with ac_cloud.py).
 """
 import argparse, json, os, re, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
 
+
+import ac_net    # noqa: E402
 import ac_paths  # noqa: E402
 HERE = ac_paths.DATA
 CACHE = HERE / "conditions_cache.json"
@@ -107,16 +108,19 @@ def _write_json(path, data):
 def server_url():
     cfg = _read_json(CLOUD_CFG) or {}
     s = cfg.get("server")
-    return s.rstrip("/") if isinstance(s, str) and s.strip() else None
+    if not isinstance(s, str) or not s.strip():
+        return None
+    try:
+        return ac_net.check_server_url(s)
+    except ValueError as e:   # an address saved by an older version, or edited by hand
+        raise ConditionsUnavailable(str(e))
 
 
 def set_server(url):
-    url = url.strip().rstrip("/")
-    u = urlparse(url)
-    if u.scheme not in ("http", "https") or not u.netloc:
-        raise ConditionsUnavailable("The server address must start with https:// (or http:// for local tests).")
-    if u.scheme == "http" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
-        print("WARNING: plain http is unencrypted. Use https.")
+    try:
+        url = ac_net.check_server_url(url)
+    except ValueError as e:
+        raise ConditionsUnavailable(str(e))
     cfg = _read_json(CLOUD_CFG) or {}
     if cfg.get("server") != url:
         cfg["server"] = url
@@ -144,8 +148,8 @@ def fetch(server=None, say=print):
         headers["If-None-Match"] = etag
     req = urllib.request.Request(url + "/v1/conditions", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            code, raw, new_etag = r.status, r.read(), r.headers.get("ETag")
+        with ac_net.open_url(req, timeout=30) as r:
+            code, raw, new_etag = r.status, ac_net.read_capped(r, ac_net.MAX_SMALL_REPLY), r.headers.get("ETag")
     except urllib.error.HTTPError as e:
         if e.code == 304 and etag:
             code, raw, new_etag = 304, b"", etag
@@ -155,6 +159,8 @@ def fetch(server=None, say=print):
         raise ConditionsUnavailable(f"Could not reach the server: {e.reason}")
     except OSError as e:
         raise ConditionsUnavailable(f"Could not reach the server: {e}")
+    except ValueError as e:
+        raise ConditionsUnavailable(str(e))
     if code == 304:
         clean = validate(cached["data"])
         cached["fetched_at"] = time.time()
@@ -182,8 +188,8 @@ def fetch_baseline_tracks(server=None):
     req = urllib.request.Request(url + "/v1/conditions", headers={"Accept": "application/json",
                                                                    "User-Agent": "ac_bench-conditions/1"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
+        with ac_net.open_url(req, timeout=30) as r:
+            data = json.loads(ac_net.read_capped(r, ac_net.MAX_SMALL_REPLY))
     except urllib.error.HTTPError as e:
         raise ConditionsUnavailable(f"The server answered {e.code} for /v1/conditions: cannot continue.")
     except (urllib.error.URLError, OSError) as e:

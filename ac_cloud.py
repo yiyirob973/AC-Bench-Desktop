@@ -13,12 +13,13 @@ tracks, laps, environment) are fetched from the server (ac_conditions.py) before
 """
 import argparse, json, sys, urllib.error, urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+
 
 import ac_paths  # noqa: E402
 HERE = ac_paths.DATA   # settings, results and caches live next to the exe (or the .py files)
 from ac_car_classifier import read_ui, class_sort_key   # noqa: E402
 import ac_carid               # noqa: E402
+import ac_net                 # noqa: E402
 import ac_conditions          # noqa: E402  (profile, tracks, laps and environment all come from the server)
 
 CFG_FILE = HERE / "cloud_config.json"
@@ -43,11 +44,10 @@ def settings(args):
         cfg["server"] = args.server.rstrip("/")
     if not cfg.get("server"):
         raise SystemExit("No server set. Pass --server URL (or fill it in on the GUI's Server tab).")
-    u = urlparse(cfg["server"])
-    if u.scheme not in ("http", "https") or not u.netloc:
-        raise SystemExit("The server address must start with https:// (or http:// for local tests).")
-    if u.scheme == "http" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
-        print("WARNING: plain http sends your API key unencrypted. Use https.")
+    try:
+        cfg["server"] = ac_net.check_server_url(cfg["server"])
+    except ValueError as e:
+        raise SystemExit(str(e))
     return cfg
 
 
@@ -64,13 +64,19 @@ def call(cfg, method, path, body=None, auth=False, etag=None):
         headers["Authorization"] = "Bearer " + cfg["api_key"]
     if etag:
         headers["If-None-Match"] = etag
-    req = urllib.request.Request(cfg["server"] + path, data=data, method=method, headers=headers)
+    try:   # the call() callers pass cfg straight in, so the address is checked here as well as in settings()
+        base = ac_net.check_server_url(cfg["server"])
+    except ValueError as e:
+        raise SystemExit(str(e))
+    req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            raw = r.read()
+        with ac_net.open_url(req, timeout=60) as r:
+            raw = ac_net.read_capped(r)
             return r.status, (json.loads(raw) if raw else None), dict(r.headers)
+    except ValueError as e:
+        raise SystemExit("The server sent something the app can't use: %s" % e)
     except urllib.error.HTTPError as e:
-        raw = e.read()
+        raw = e.read(ac_net.MAX_ERROR_BODY)
         try:
             return e.code, json.loads(raw), dict(e.headers)
         except Exception:

@@ -414,6 +414,7 @@ end
 local function applyTag(carId, label, allowWrite)
   local carsDir = M.carsDir
   local f = carsDir .. '/' .. carId .. '/ui/ui_car.json'
+  if not validLabel(label) or tostring(carId):find('[/\\]') or tostring(carId):find('..', 1, true) then return 'skipped' end
   local raw = readFile(f)
   if raw == nil then return 'skipped' end
   local new, why = withClassTag(raw, cfg.prefix, label)     -- plain text work, no JSON parsing needed to find out if it's already right
@@ -437,12 +438,37 @@ local function applyTag(carId, label, allowWrite)
 end
 
 -- ---------------------------------------------------------------- state & config
+-- Class labels look like 1A .. 1Z, 2A .. 2Z. Anything else from the server is ignored, never written to a car.
+local function validLabel(label)
+  return type(label) == 'string' and #label <= 4 and label:match('^[1-9]%d?[A-Z]$') ~= nil
+end
+
+local function validHash(h)
+  return type(h) == 'string' and #h == 64 and h:match('^%x+$') ~= nil
+end
+
+-- https only; plain http is accepted for this computer, so a local test server still works.
+local function secureServer(url)
+  local u = url:lower()
+  if u:find('[@%c%s\\]') then return false end
+  if u:match('^https://[^/]+') then return true end
+  for _, host in ipairs({ 'localhost', '127%.0%.0%.1' }) do
+    -- the host must end right after its name: localhost.example.com is somebody else's machine
+    if u:match('^http://' .. host .. '$') or u:match('^http://' .. host .. '[:/]') then return true end
+  end
+  return false
+end
+
 local function loadConfig()
   local s = dir and readFile(dir .. '/config.json')
   if not s then return end
   local ok, c = pcall(JSON.parse, s)
   if not ok or type(c) ~= 'table' then return end
-  if type(c.server) == 'string' then cfg.server = c.server:gsub('%s+', ''):gsub('/+$', '') end
+  if type(c.server) == 'string' then
+    local url = c.server:gsub('%s+', ''):gsub('/+$', '')
+    if url == '' or secureServer(url) then cfg.server = url
+    else cfg.server = ''; log('the server address must start with https://, class tags are off') end
+  end
   if c.include_provisional ~= nil then cfg.include_provisional = (c.include_provisional == true) end
   if c.auto ~= nil then cfg.auto = (c.auto == true) end
   if type(c.prefix) == 'string' and #c.prefix >= PREFIX_MIN then cfg.prefix = c.prefix end
@@ -705,8 +731,8 @@ local function lookupWork()
       end
       for _, rec in ipairs(data.cars or {}) do
         local status = tostring(rec.status or ''):lower()
-        local label = rec.class
-        if type(label) == 'string' and label ~= '' and (status == 'verified' or (cfg.include_provisional and status == 'provisional')) then
+        local label = type(rec) == 'table' and rec.class
+        if validHash(rec.car_hash) and validLabel(label) and (status == 'verified' or (cfg.include_provisional and status == 'provisional')) then
           st.labels[rec.car_hash] = label
         end
       end

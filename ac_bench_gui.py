@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GUI for the AC benchmark tools. Keep this file in the same folder as ac_lap_bench.py, ac_conditions.py, ac_baseline.py,
-ac_track_check.py, ac_cloud.py, ac_car_classifier.py, ac_tag_writer.py and ac_theme.py, plus template_race.ini (the race.ini the
+ac_track_check.py, ac_cloud.py, ac_net.py, ac_car_classifier.py, ac_tag_writer.py and ac_theme.py, plus template_race.ini (the race.ini the
 benchmark races are built from), a bundled_car/<car id>/ folder (the car the benchmark drives) and apps/lua/ac_bench/
 (the in-game lap logger) and branding/ (the logo files). The car and the logger are installed into Assetto Corsa automatically before each benchmark.
 Results (lap_results.json) are saved in that folder and settings in ac_bench_gui.json.
@@ -1493,7 +1493,7 @@ def selfcheck():
         check(f.is_file(), f"embedded logo file: {f.name}")
     lua = sorted(p.name for p in BUNDLED_LUA_APP.iterdir()) if BUNDLED_LUA_APP.is_dir() else []
     check("ac_bench.lua" in lua and "manifest.ini" in lua and "icon.png" in lua, f"embedded Lua logger: {lua}")
-    for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
+    for mod in ("ac_paths", "ac_lap_bench", "ac_cloud", "ac_net", "ac_conditions", "ac_live", "ac_tag_writer", "ac_track_check",
                 "ac_baseline", "ac_rating", "ac_carid", "ac_car_classifier", "ac_input", "ac_controls", "ac_theme", "tkinter"):
         try:
             importlib.import_module(mod)

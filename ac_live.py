@@ -7,6 +7,7 @@ written to disk.
 """
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -17,6 +18,9 @@ import ac_paths  # noqa: E402
 HERE = ac_paths.DATA
 HASH_CACHE = HERE / "car_hash_cache.json"   # {car folder: {"sig": [...], "hash": hex or null}}, local hashes only
 BATCH = 500
+
+
+HASH = re.compile(r"[0-9a-f]{64}")
 
 
 class LiveUnavailable(Exception):
@@ -161,8 +165,13 @@ def lookup(server, hashes):
         if code != 200 or not isinstance(data, dict):
             raise LiveUnavailable("Lookup failed: %s" % ((data or {}).get("error", code) if isinstance(data, dict) else code))
         meta = data
-        for rec in data.get("cars", []):
-            records[rec["car_hash"]] = rec
+        cars = data.get("cars", [])
+        if not isinstance(cars, list):
+            raise LiveUnavailable("The server's answer is not in the expected form.")
+        for rec in cars:
+            h = rec.get("car_hash") if isinstance(rec, dict) else None
+            if isinstance(h, str) and HASH.fullmatch(h):   # anything else is dropped, not guessed at
+                records[h] = rec
     return {"records": records, "tracks": meta.get("tracks", []), "table_version": meta.get("table_version"),
             "generated": meta.get("generated")}
 
